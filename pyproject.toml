@@ -1,0 +1,7 @@
+[tool.pyright]
+include = ["src"]
+exclude = [
+  "**/__pycache__",
+  "src/data"
+]
+pythonPath = "/home/tc/.pyenv/versions/venv/bin/python"
