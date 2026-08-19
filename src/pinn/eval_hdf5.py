@@ -13,6 +13,8 @@ Usage:
 """
 
 import argparse
+import os
+import sys
 
 import h5py
 import numpy as np
@@ -22,21 +24,51 @@ from pinn_io import load_pinn
 
 
 def load_hdf5(path, x_key, t_key, u_key, flat):
-    with h5py.File(path, "r") as f:
+    """
+    Load reference data from an HDF5 file.
+
+    Raises:
+        FileNotFoundError: if `path` doesn't exist.
+        RuntimeError: if `path` exists but can't be opened as HDF5.
+        KeyError: if any of x_key/t_key/u_key are missing from the file.
+        ValueError: if (non-flat) u's shape doesn't match meshgrid(x, t).
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Reference data file not found at '{path}'.")
+
+    try:
+        f = h5py.File(path, "r")
+    except OSError as e:
+        raise RuntimeError(f"Failed to open '{path}' as an HDF5 file: {e}") from e
+
+    with f:
+        missing = [k for k in (x_key, t_key, u_key) if k not in f]
+        if missing:
+            raise KeyError(
+                f"Dataset(s) {missing} not found in '{path}'. Available "
+                f"datasets: {list(f.keys())}. Pass --x-key/--t-key/--u-key "
+                f"if your file uses different names."
+            )
         x = np.array(f[x_key])
         t = np.array(f[t_key])
         u = np.array(f[u_key])
 
     if flat:
         # x, t, u are already the same shape (N,)
+        if not (x.shape == t.shape == u.shape):
+            raise ValueError(
+                f"--flat was given but x/t/u have mismatched shapes: "
+                f"x={x.shape}, t={t.shape}, u={u.shape}."
+            )
         return x, t, u, None
     else:
         # x: (nx,), t: (nt,), u: (nx, nt) -> build meshgrid to match u
         X, T = np.meshgrid(x, t, indexing="ij")
-        assert u.shape == X.shape, (
-            f"u shape {u.shape} doesn't match meshgrid(x, t) shape {X.shape}; "
-            f"pass --flat if your data is already a point list."
-        )
+        if u.shape != X.shape:
+            raise ValueError(
+                f"u shape {u.shape} doesn't match meshgrid(x, t) shape {X.shape}; "
+                f"pass --flat if your data is already a point list."
+            )
         return X.flatten(), T.flatten(), u.flatten(), u.shape
 
 
@@ -96,19 +128,28 @@ def main():
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model, _metadata = load_pinn(args.checkpoint, FCN, device)
 
-    x, t, u_true, grid_shape = load_hdf5(
-        args.data, args.x_key, args.t_key, args.u_key, args.flat
-    )
+    try:
+        model, _metadata = load_pinn(args.checkpoint, FCN, device)
+        x, t, u_true, grid_shape = load_hdf5(
+            args.data, args.x_key, args.t_key, args.u_key, args.flat
+        )
+    except (FileNotFoundError, RuntimeError, KeyError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
     u_pred = evaluate(model, x, t, device)
 
     report_errors(u_pred, u_true)
 
     if args.save:
-        np.savez(
-            args.save, x=x, t=t, u_pred=u_pred, u_true=u_true, grid_shape=grid_shape
-        )
+        try:
+            np.savez(
+                args.save, x=x, t=t, u_pred=u_pred, u_true=u_true, grid_shape=grid_shape
+            )
+        except OSError as e:
+            print(f"Error: failed to save evaluation data to '{args.save}': {e}", file=sys.stderr)
+            sys.exit(1)
         print(f"Saved evaluation data to {args.save}")
 
 

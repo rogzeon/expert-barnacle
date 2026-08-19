@@ -1,20 +1,7 @@
+from dataclasses import asdict, dataclass
+from typing import Any
+
 from torch import nn
-import torch
-from dataclasses import dataclass, asdict
-
-
-# figure out what this actually does later
-# TODO: Remove this comment
-class FourierFeatures(nn.Module):
-    def __init__(self, in_dim, num_features, scale=10.0):
-        super().__init__()
-        self.B = nn.Parameter(
-            torch.randn(in_dim, num_features) * scale, requires_grad=False
-        )
-
-    def forward(self, x):
-        x_proj = 2 * torch.pi * x @ self.B
-        return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
 
 
 # Simple NN for now.
@@ -25,14 +12,9 @@ class FCN(nn.Module):
         output_dim,
         hidden_dim,
         num_layers,
-        fourier_features=64,
-        fourier_scale=10.0,
     ):
         super().__init__()
-        # self.fourier = FourierFeatures(input_dim, fourier_features, scale=fourier_scale)
-        # fourier_dim = fourier_features * 2  # sin + cos
         activation = nn.SiLU
-        # self.fcs = nn.Sequential(*[nn.Linear(fourier_dim, hidden_dim), activation()])
         self.fcs = nn.Sequential(*[nn.Linear(input_dim, hidden_dim), activation()])
         self.fch = nn.Sequential(
             *[
@@ -49,7 +31,6 @@ class FCN(nn.Module):
         }
 
     def forward(self, x):
-        # x = self.fourier(x)
         x = self.fcs(x)
         x = self.fch(x)
         x = self.fce(x)
@@ -98,3 +79,29 @@ class Domain:
 
     def maxdim(self, dim):
         return self.dims[dim][1]
+
+
+@dataclass
+class BlackScholesParams:
+    """Physical (unnormalized) parameters for the Black-Scholes PDE / contract.
+
+    strike: option strike price K
+    sigma:  volatility
+    r:      risk-free interest rate
+    """
+
+    strike: float
+    sigma: float
+    r: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "BlackScholesParams":
+        missing = {"strike", "sigma", "r"} - d.keys()
+        if missing:
+            raise KeyError(
+                f"Can't build BlackScholesParams from {d!r}; missing key(s) {missing}."
+            )
+        return cls(strike=d["strike"], sigma=d["sigma"], r=d["r"])

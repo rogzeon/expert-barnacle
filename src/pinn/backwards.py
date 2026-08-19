@@ -1,4 +1,5 @@
 from pinn import FCN, Domain, BlackScholesParams
+
 import torch
 from torch import nn
 
@@ -129,7 +130,10 @@ def train(domain: Domain, params: BlackScholesParams):
     MAX_T = domain.t_max
     NUM_PTS_T = domain.nt
 
-    # PDE parameters
+    # Physical (unnormalized) contract parameters. These are the single
+    # source of truth for this run — the same `params` object gets saved
+    # into the checkpoint (see main()) so eval_analytical.py can read them
+    # back out instead of hardcoding its own copy that can drift out of sync.
     SIG = params.sigma
     R = params.r
     STRIKE = params.strike
@@ -165,10 +169,12 @@ def train(domain: Domain, params: BlackScholesParams):
 
     # PINN setup
     pinn = FCN(2, 1, 64, 3)
-    optimiser = torch.optim.Adam(pinn.parameters(), lr=1e-3)
+    sig_est = torch.nn.Parameter(torch.tensor([0.05]).view(-1, 1))
+    optimiser = torch.optim.Adam(list(pinn.parameters()) + [sig_est], lr=1e-3)
     lambda1, lambda2 = 1, 1
     print(boundary_inputs.std(dim=0))
     print(u0_target.var().item())
+
     with torch.no_grad():
         test_x = torch.linspace(0, 1, 10).unsqueeze(1)
         test_t = torch.ones_like(test_x)
@@ -176,17 +182,9 @@ def train(domain: Domain, params: BlackScholesParams):
         print(pinn(test_in).flatten())
 
     def compute_loss():
-        u_at_t0 = pinn(boundary_inputs)
+        u_pred = pinn(data_inputs)
 
-        # Boundary losses for initial conditions
-        loss1 = torch.mean((u_at_t0 - u0_target) ** 2)
-
-        # Boundary losses at x=0, MAX_X
-        u_bdry_left = pinn(bdry_left).view(-1, 1)
-        u_bdry_right = pinn(bdry_right).view(-1, 1)
-
-        loss2 = torch.mean((u_bdry_left.view(-1, 1) - u_bdry_left_tgt) ** 2)
-        loss3 = torch.mean((u_bdry_right.view(-1, 1) - u_bdry_right_tgt) ** 2)
+        data_loss = torch.mean((u_pred - u_real) ** 2)
 
         u_phys = pinn(phys_inputs)
 
@@ -199,7 +197,7 @@ def train(domain: Domain, params: BlackScholesParams):
         loss4 = torch.mean(
             (
                 dudt_phys
-                + 1 / 2 * SIG**2 * (x_phys_view**2) * d2udx2_phys
+                + 1 / 2 * sig_est**2 * (x_phys_view**2) * d2udx2_phys
                 + R * (x_phys_view) * dudx_phys
                 - R * u_phys
             )
@@ -225,7 +223,8 @@ def train(domain: Domain, params: BlackScholesParams):
             print(
                 f"[Adam] {i}/3000. Loss: {loss.item():.6e}. "
                 f"L1: {loss1.item():.6e}. L2: {loss2.item():.6e}. "
-                f"L3: {loss3.item():.6e}. L4: {loss4.item():.6e}"
+                f"L3: {loss3.item():.6e}. L4: {loss4.item():.6e}. "
+                f"sig: {sig_est.item():.6e}"
             )
 
     lbfgs = torch.optim.LBFGS(
