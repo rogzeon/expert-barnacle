@@ -5,9 +5,8 @@ from model import FCN
 
 from common.classes import BlackScholesPDE, Domain
 from common.funcs import read_black_scholes_run
-
-from .pinn_io import save_pinn
-from .plot_heatmap import plot_single, predict_grid
+from pinn.pinn_io import save_pinn
+from pinn.plot_heatmap import plot_single, predict_grid
 
 
 # The following functions create the IC and/or boundary conditions.

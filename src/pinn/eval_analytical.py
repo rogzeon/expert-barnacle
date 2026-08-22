@@ -23,9 +23,8 @@ import torch
 from model import FCN
 
 from common.classes import BlackScholesPDE, Domain, Option
-
-from .pinn_io import load_pinn
-from .plot_heatmap import predict_grid
+from pinn.pinn_io import load_pinn
+from pinn.plot_heatmap import predict_grid
 
 
 def _norm_cdf(z: torch.Tensor) -> torch.Tensor:

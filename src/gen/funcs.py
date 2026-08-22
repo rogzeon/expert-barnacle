@@ -157,7 +157,7 @@ def apply_noise(store: pde.MemoryStorage, sig: float) -> pde.MemoryStorage:
     """Add Gaussian noise with standard deviation ``sig`` to every stored field."""
     if sig == 0:
         return store
-    for _, field in store.items():
+    for _, field in store.items():  # noqa: PERF102
         field.data += sig * np.random.normal(size=field.data.shape)
     return store
 

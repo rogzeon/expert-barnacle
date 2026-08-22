@@ -4,9 +4,8 @@ import torch
 
 from common.classes import BlackScholesPDE, Domain, Option
 from pinn import FCN
-
-from .pinn_io import save_pinn
-from .plot_heatmap import plot_single, predict_grid
+from pinn.pinn_io import save_pinn
+from pinn.plot_heatmap import plot_single, predict_grid
 
 
 # The following functions create the IC and/or boundary conditions.
