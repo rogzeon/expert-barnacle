@@ -19,8 +19,9 @@ import sys
 import h5py
 import numpy as np
 import torch
-from pinn import FCN  # <-- adjust import to wherever your FCN class lives
 from pinn_io import load_pinn
+
+from pinn import FCN  # <-- adjust import to wherever your FCN class lives
 
 
 def load_hdf5(path, x_key, t_key, u_key, flat):

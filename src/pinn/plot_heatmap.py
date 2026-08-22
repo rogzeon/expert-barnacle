@@ -14,8 +14,11 @@ import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from model import FCN, Domain
-from pinn_io import load_pinn
+
+from common.classes import Domain
+
+from .model import FCN
+from .pinn_io import load_pinn
 
 
 def predict_grid(

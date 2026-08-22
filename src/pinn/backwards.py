@@ -1,11 +1,13 @@
-from pinn import FCN, Domain, BlackScholesParams
+import argparse
 
 import torch
-from torch import nn
+from model import FCN
 
-import argparse
-from pinn.pinn_io import save_pinn
-from pinn.plot_heatmap import plot_single, predict_grid
+from common.classes import BlackScholesPDE, Domain
+from common.funcs import read_black_scholes_run
+
+from .pinn_io import save_pinn
+from .plot_heatmap import plot_single, predict_grid
 
 
 # The following functions create the IC and/or boundary conditions.
@@ -15,10 +17,6 @@ def initial_condition(t0, x0, **kwargs):
     Modify this function in order to change the IC.
     """
     u0_target = torch.clamp(x0 - kwargs["STRIKE"], min=0)
-    # eps = 0.0025
-    # k = x0 - kwargs["STRIKE"]
-    # u0_target = (k + torch.sqrt(k**2 + eps)) / 2
-    #   dudt0_target = torch.zeros_like(x0).view(-1, 1).requires_grad_(False)
 
     return (u0_target,)
 
@@ -75,6 +73,39 @@ def create_right_boundary(t_boundary_x_limits, x_max, **kwargs):
     return boundary_inputs_right, boundary_values_right
 
 
+def create_data_points(data, x_min, x_max, t_min, t_max, x_scale):
+    """
+    Build (x, t) input points and matching targets from a stored PDE run's
+    solution tensor, in the same normalized [0, 1] x [0, 1] space used
+    everywhere else in this module.
+
+    Args:
+        data: Tensor of shape (n_times, n_x), forward-chronological, as
+            returned by ``read_black_scholes_run``.
+        x_min, x_max, t_min, t_max: Normalized domain bounds (0.0 and 1.0
+            in this module, since x/t are rescaled before this is called).
+        x_scale: The physical range of the spatial domain (``X_SCALE`` in
+            ``train``), used to put the raw PDE values into the same
+            normalized units as ``u0_target``.
+
+    Returns:
+        A ``(data_inputs, u_real)`` tuple: ``data_inputs`` has shape
+        (n_times * n_x, 2) with columns (x, t); ``u_real`` has shape
+        (n_times * n_x, 1) and is normalized by ``x_scale`` to match the
+        rest of the model's targets.
+    """
+    n_times, n_x = data.shape
+    x_data = torch.linspace(x_min, x_max, n_x)
+    t_data = torch.linspace(t_min, t_max, n_times)
+    # indexing="ij" with (t, x) so flattening matches data's (n_times, n_x)
+    # row-major layout: t varies slowest, x varies fastest.
+    space_t_data, space_x_data = torch.meshgrid(t_data, x_data, indexing="ij")
+
+    data_inputs = torch.stack((space_x_data.flatten(), space_t_data.flatten()), dim=-1)
+    u_real = (data.flatten() / x_scale).view(-1, 1)
+    return data_inputs, u_real
+
+
 # The following function(s) help set up training
 def gen_phys_training_pts(min_t, max_t, min_x, max_x, num_pts_t, num_pts_x):
     """
@@ -121,7 +152,7 @@ def get_derivatives(output, wrt, num):
     return tuple(derivs)
 
 
-def train(domain: Domain, params: BlackScholesParams):
+def train(domain: Domain, params: BlackScholesPDE, data: torch.Tensor):
     # PDE paramenters
     MIN_X = domain.mindim(0)
     MAX_X = domain.maxdim(0)
@@ -136,7 +167,7 @@ def train(domain: Domain, params: BlackScholesParams):
     # back out instead of hardcoding its own copy that can drift out of sync.
     SIG = params.sigma
     R = params.r
-    STRIKE = params.strike
+    STRIKE = params.k
 
     # Normalize
     X_SCALE = MAX_X - MIN_X
@@ -161,17 +192,23 @@ def train(domain: Domain, params: BlackScholesParams):
         t_boundary_x_limits, MAX_X, STRIKE=STRIKE, R=R, T_MAX=MAX_T, S_MAX=MAX_X
     )
 
+    # Data points/targets straight from the stored PDE solve. This is the
+    # actual solution the PDE solver computed, so fitting to it grounds the
+    # PINN in real data rather than relying only on the IC/BC/physics terms.
+    data_inputs, u_real = create_data_points(data, MIN_X, MAX_X, MIN_T, MAX_T, X_SCALE)
+
     t_phys, x_phys, phys_inputs = gen_phys_training_pts(
         MIN_T, MAX_T, MIN_X, MAX_X, NUM_PTS_T, NUM_PTS_X
     )
 
     print(f"Shape of physics_inputs (x,t): {phys_inputs.shape}")
+    print(f"Shape of data_inputs (x,t): {data_inputs.shape}")
 
     # PINN setup
     pinn = FCN(2, 1, 64, 3)
     sig_est = torch.nn.Parameter(torch.tensor([0.05]).view(-1, 1))
     optimiser = torch.optim.Adam(list(pinn.parameters()) + [sig_est], lr=1e-3)
-    lambda1, lambda2 = 1, 1
+    lambda1, lambda2, lambda3 = 1, 1, 1
     print(boundary_inputs.std(dim=0))
     print(u0_target.var().item())
 
@@ -182,9 +219,16 @@ def train(domain: Domain, params: BlackScholesParams):
         print(pinn(test_in).flatten())
 
     def compute_loss():
-        u_pred = pinn(data_inputs)
+        # Data loss: fit the PINN to the actual solved PDE run.
+        u_data_pred = pinn(data_inputs)
+        data_loss = torch.mean((u_data_pred - u_real) ** 2)
 
-        data_loss = torch.mean((u_pred - u_real) ** 2)
+        # Boundary losses (left/right spatial boundaries).
+        u_bdry_left_pred = pinn(bdry_left)
+        boundary_left_loss = torch.mean((u_bdry_left_pred - u_bdry_left_tgt) ** 2)
+
+        u_bdry_right_pred = pinn(bdry_right)
+        boundary_right_loss = torch.mean((u_bdry_right_pred - u_bdry_right_tgt) ** 2)
 
         u_phys = pinn(phys_inputs)
 
@@ -194,7 +238,7 @@ def train(domain: Domain, params: BlackScholesParams):
 
         x_phys_view = x_phys.view(-1, 1)
         # Physics loss
-        loss4 = torch.mean(
+        loss_phys = torch.mean(
             (
                 dudt_phys
                 + 1 / 2 * sig_est**2 * (x_phys_view**2) * d2udx2_phys
@@ -205,8 +249,12 @@ def train(domain: Domain, params: BlackScholesParams):
         )
 
         # backpropagate joint loss, take optimiser step
-        loss = loss1 + lambda1 * (loss2 + loss3) + lambda2 * loss4
-        return loss, loss1, loss2, loss3, loss4
+        loss = (
+            lambda3 * data_loss
+            + lambda1 * (boundary_left_loss + boundary_right_loss)
+            + lambda2 * loss_phys
+        )
+        return loss, data_loss, boundary_left_loss, boundary_right_loss, loss_phys
 
     for i in range(7501):
         optimiser.zero_grad()
@@ -222,8 +270,8 @@ def train(domain: Domain, params: BlackScholesParams):
         if i % 500 == 0:
             print(
                 f"[Adam] {i}/3000. Loss: {loss.item():.6e}. "
-                f"L1: {loss1.item():.6e}. L2: {loss2.item():.6e}. "
-                f"L3: {loss3.item():.6e}. L4: {loss4.item():.6e}. "
+                f"L1(data): {loss1.item():.6e}. L2(bdry_left): {loss2.item():.6e}. "
+                f"L3(bdry_right): {loss3.item():.6e}. L4(phys): {loss4.item():.6e}. "
                 f"sig: {sig_est.item():.6e}"
             )
 
@@ -246,8 +294,8 @@ def train(domain: Domain, params: BlackScholesParams):
         if lbfgs_steps[0] % 200 == 0:
             print(
                 f"[LBFGS] step {lbfgs_steps[0]}. Loss: {loss.item():.6e}. "
-                f"L1: {loss1.item():.6e}. L2: {loss2.item():.6e}. "
-                f"L3: {loss3.item():.6e}. L4: {loss4.item():.6e}"
+                f"L1(data): {loss1.item():.6e}. L2(bdry_left): {loss2.item():.6e}. "
+                f"L3(bdry_right): {loss3.item():.6e}. L4(phys): {loss4.item():.6e}"
             )
         lbfgs_steps[0] += 1
         return loss
@@ -257,8 +305,8 @@ def train(domain: Domain, params: BlackScholesParams):
     loss, loss1, loss2, loss3, loss4 = compute_loss()
     print(
         f"[FINAL] Loss: {loss.item():.6e}. "
-        f"L1: {loss1.item():.6e}. L2: {loss2.item():.6e}. "
-        f"L3: {loss3.item():.6e}. L4: {loss4.item():.6e}"
+        f"L1(data): {loss1.item():.6e}. L2(bdry_left): {loss2.item():.6e}. "
+        f"L3(bdry_right): {loss3.item():.6e}. L4(phys): {loss4.item():.6e}"
     )
     return pinn
 
@@ -272,6 +320,9 @@ def main():
 
     parser = argparse.ArgumentParser(description="Plot PINN solution heatmap.")
     parser.add_argument(
+        "-d", "--data", type=str, required=True, help="Path to training data"
+    )
+    parser.add_argument(
         "-s",
         "--saveto",
         type=str,
@@ -279,15 +330,17 @@ def main():
         help="Path to where the model should be saved",
     )
     args = parser.parse_args()
-    domain = Domain([(0, 3, 40)], 0, 10, 10)
-    params = BlackScholesParams(strike=0.5, sigma=0.02, r=0.02)
-    pinn = train(domain, params)
+
+    # Load the domain/PDE params this run was solved with, plus the actual
+    # solved field values as a tensor to train against.
+    domain, params, data = read_black_scholes_run(args.data)
+    pinn = train(domain, params, data)
     save_pinn(
         args.saveto,
         pinn,
         pinn.metadata,
-        domain=domain.to_dict(),
-        pde=params.to_dict(),
+        domain=domain.to_metadata(),
+        pde=params.to_metadata(),
     )
     pinn = pinn.to("cpu")
     torch.set_default_device("cpu")

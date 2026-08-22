@@ -3,14 +3,16 @@ Evaluate a trained PINN against the closed-form Black-Scholes solution.
 
     python eval_analytical.py --checkpoint pinn.pt --nx 200 --nt 200
 
-The contract parameters (strike, sigma, r) are read from the checkpoint's
-saved metadata (see pinn_io.save_pinn / pinn.params.BlackScholesParams) so
-they always match what the model was actually trained on. Use --strike /
---sigma / --r / --t-max to override any of them manually, e.g. to compare
-the model against a *different* contract than it was trained on.
+The contract parameters (strike, sigma, r, option type) are read from the
+checkpoint's saved metadata (see pinn_io.save_pinn / common.classes.
+BlackScholesPDE.to_metadata) so they always match what the model was
+actually trained on. Use --strike / --sigma / --r / --option / --t-max to
+override any of them manually, e.g. to compare the model against a
+*different* contract than it was trained on.
 
 Requires a checkpoint saved with pinn_io.save_pinn(), e.g.:
-    save_pinn("pinn.pt", pinn, arch, domain=..., pde=params.to_dict())
+    save_pinn("pinn.pt", pinn, arch, domain=domain.to_metadata(),
+              pde=params.to_metadata())
 """
 
 import argparse
@@ -18,10 +20,12 @@ import sys
 
 import numpy as np
 import torch
-from model import FCN, Domain  # <-- adjust import to wherever your FCN class lives
-from params import BlackScholesParams
-from pinn_io import load_pinn
-from pinn.plot_heatmap import predict_grid
+from model import FCN
+
+from common.classes import BlackScholesPDE, Domain, Option
+
+from .pinn_io import load_pinn
+from .plot_heatmap import predict_grid
 
 
 def _norm_cdf(z: torch.Tensor) -> torch.Tensor:
@@ -32,7 +36,7 @@ def _norm_cdf(z: torch.Tensor) -> torch.Tensor:
 def analytical_solution(
     x: torch.Tensor,
     t: torch.Tensor,
-    params: BlackScholesParams,
+    params: BlackScholesPDE,
     t_max: float,
 ) -> torch.Tensor:
     """
@@ -47,7 +51,7 @@ def analytical_solution(
     Returns a tensor of the same shape as x / t.
     """
     S = x
-    K, r, sigma = params.strike, params.r, params.sigma
+    K, r, sigma = params.k, params.r, params.sigma
 
     tau = t_max - t
     eps = 1e-8
@@ -74,7 +78,7 @@ def evaluate(
     nx,
     nt,
     device,
-    params: BlackScholesParams,
+    params: BlackScholesPDE,
     rescale=False,
     x_scale=None,
     t_scale=None,
@@ -119,30 +123,45 @@ def report_errors(u_pred: torch.Tensor, u_true: torch.Tensor):
     return {"mse": mse, "mae": mae, "max_err": max_err, "l2_rel": l2_rel}
 
 
-def resolve_params(metadata: dict, args) -> BlackScholesParams:
+def resolve_params(metadata: dict, args, t_max: float) -> BlackScholesPDE:
     """
-    Build the BlackScholesParams to evaluate against: start from whatever the
-    checkpoint has saved, then apply any --strike/--sigma/--r overrides.
-    Errors clearly if a value isn't available from either source.
+    Build the BlackScholesPDE to evaluate against: start from whatever the
+    checkpoint has saved (expected to be BlackScholesPDE.to_metadata()'s
+    output, i.e. keys "option"/"K"/"sigma"/"r"), then apply any
+    --option/--strike/--sigma/--r overrides. Errors clearly if a value
+    isn't available from either source.
+
+    ``t_max`` is passed in explicitly rather than pulled from the saved PDE
+    metadata: BlackScholesPDE.to_metadata() doesn't currently emit a
+    top-level "t_max" key (it's only nested under "domain"), so it can't be
+    resolved from `saved` alone. Callers should derive it from the
+    checkpoint's domain metadata / --t-max instead (see main()).
     """
     saved = metadata.get("pde") or {}
 
-    def resolve(name: str, cli_value):
+    def resolve(name: str, cli_value, saved_key: str | None = None):
         if cli_value is not None:
             return cli_value
-        if name in saved:
-            return saved[name]
+        key = saved_key or name
+        if key in saved:
+            return saved[key]
         raise ValueError(
-            f"'{name}' isn't in the checkpoint's saved PDE metadata (it may "
-            f"predate the pde= field in save_pinn) and no --{name} override "
-            f"was given. Either re-save the checkpoint with pde=..., or pass "
-            f"--{name} explicitly."
+            f"'{key}' isn't in the checkpoint's saved PDE metadata (it may "
+            f"predate the pde= field in save_pinn, or predate the option "
+            f"field) and no --{name} override was given. Either re-save the "
+            f"checkpoint with pde=params.to_metadata(), or pass --{name} "
+            f"explicitly."
         )
 
-    return BlackScholesParams(
-        strike=resolve("strike", args.strike),
+    option_value = resolve("option", args.option, saved_key="option")
+    option = option_value if isinstance(option_value, Option) else Option[option_value]
+
+    return BlackScholesPDE(
+        option=option,
+        k=resolve("strike", args.strike, saved_key="K"),
         sigma=resolve("sigma", args.sigma),
         r=resolve("r", args.r),
+        t_max=t_max,
     )
 
 
@@ -181,6 +200,13 @@ def main():
         help="Defaults to value stored in checkpoint metadata",
     )
     parser.add_argument(
+        "--option",
+        type=str,
+        default=None,
+        choices=[o.name for o in Option],
+        help="Override the option type. Defaults to the value saved in the checkpoint.",
+    )
+    parser.add_argument(
         "--strike",
         type=float,
         default=None,
@@ -212,20 +238,21 @@ def main():
 
     try:
         model, metadata = load_pinn(args.checkpoint, FCN, device)
-        domain = Domain.from_dict(metadata["domain"])
-        params = resolve_params(metadata, args)
+        domain = Domain.from_metadata(metadata["domain"])
+
+        x_min = args.x_min if args.x_min is not None else domain.mindim(0)
+        x_max = args.x_max if args.x_max is not None else domain.maxdim(0)
+        t_min = args.t_min if args.t_min is not None else domain.t_min
+        t_max = args.t_max if args.t_max is not None else domain.t_max
+
+        params = resolve_params(metadata, args, t_max)
     except (FileNotFoundError, RuntimeError, KeyError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    x_min = args.x_min if args.x_min is not None else domain.mindim(0)
-    x_max = args.x_max if args.x_max is not None else domain.maxdim(0)
-    t_min = args.t_min if args.t_min is not None else domain.t_min
-    t_max = args.t_max if args.t_max is not None else domain.t_max
-
     print(
-        f"Evaluating against strike={params.strike}, sigma={params.sigma}, "
-        f"r={params.r}, t_max={t_max}"
+        f"Evaluating against option={params.option.name}, strike={params.k}, "
+        f"sigma={params.sigma}, r={params.r}, t_max={t_max}"
     )
 
     X, T, u_pred, u_true = evaluate(
@@ -252,7 +279,10 @@ def main():
                 u_true=u_true.numpy(),
             )
         except OSError as e:
-            print(f"Error: failed to save evaluation grid to '{args.save}': {e}", file=sys.stderr)
+            print(
+                f"Error: failed to save evaluation grid to '{args.save}': {e}",
+                file=sys.stderr,
+            )
             sys.exit(1)
         print(f"Saved evaluation grid to {args.save}")
 

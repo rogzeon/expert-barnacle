@@ -1,7 +1,8 @@
 import sys
 
 import pde
-from funcs import apply_noise, pdes
+
+from .funcs import apply_noise, pdes
 
 if __name__ == "__main__":
     try:
@@ -29,9 +30,9 @@ if __name__ == "__main__":
         import traceback
 
         print("".join(traceback.format_tb(e.__traceback__)))
-        exit()
+        sys.exit()
 
-    file_store = pde.FileStorage(f"src/data/{filename}.hdf5")
+    file_store = pde.FileStorage(f"src/data/{filename}.hdf5", info=output.info)
     output.apply(lambda field: field, out=file_store)
 
     with open(f"src/data/{filename}_args.txt", "w") as f:

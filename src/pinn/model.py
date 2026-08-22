@@ -1,5 +1,3 @@
-from dataclasses import asdict, dataclass
-from typing import Any
 
 from torch import nn
 
@@ -35,73 +33,3 @@ class FCN(nn.Module):
         x = self.fch(x)
         x = self.fce(x)
         return x
-
-
-@dataclass
-class Domain:
-    """
-    For convenient & flexible storage of the PDE domain.
-
-    dims: stores the minimum & maximum values per dimension,
-    as well as the resolution in that dimension
-
-    t_min: initial time value
-    t_max: final time value
-    _t_res: time resolution
-    """
-
-    dims: list[tuple[float, float, float]]
-    t_min: float
-    t_max: float
-    _t_res: float
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "Domain":
-        return cls(
-            dims=[tuple(pair) for pair in d["dims"]],
-            t_min=d["t_min"],
-            t_max=d["t_max"],
-            _t_res=d["_t_res"],
-        )
-
-    @property
-    def nt(self) -> int:
-        return int(self._t_res * (self.t_max - self.t_min))
-
-    def ndim(self, dim) -> int:
-        return int(self.dims[dim][2] * (self.dims[dim][1] - self.dims[dim][0]))
-
-    def mindim(self, dim):
-        return self.dims[dim][0]
-
-    def maxdim(self, dim):
-        return self.dims[dim][1]
-
-
-@dataclass
-class BlackScholesParams:
-    """Physical (unnormalized) parameters for the Black-Scholes PDE / contract.
-
-    strike: option strike price K
-    sigma:  volatility
-    r:      risk-free interest rate
-    """
-
-    strike: float
-    sigma: float
-    r: float
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BlackScholesParams":
-        missing = {"strike", "sigma", "r"} - d.keys()
-        if missing:
-            raise KeyError(
-                f"Can't build BlackScholesParams from {d!r}; missing key(s) {missing}."
-            )
-        return cls(strike=d["strike"], sigma=d["sigma"], r=d["r"])
