@@ -109,7 +109,7 @@ def load_pinn(
         ) from e
 
     if not isinstance(ckpt, dict):
-        raise RuntimeError(
+        raise TypeError(
             f"Checkpoint at '{path}' has an unexpected format (expected a "
             f"dict, got {type(ckpt).__name__}). It probably wasn't saved with save_pinn()."
         )

@@ -13,21 +13,17 @@ from __future__ import annotations
 
 import numpy as np
 import pde
-from pde.pdes import AllenCahnPDE, DiffusionPDE
+from pde.pdes.allen_cahn import AllenCahnPDE
+from pde.pdes.diffusion import DiffusionPDE
 
-from pde_types import (
-    N_TIME_STEPS,
+from common.classes import *
+from common.globals import (
+    PDE_TYPE_ALLEN_CAHN,
     PDE_TYPE_BLACK_SCHOLES,
+    PDE_TYPE_DIFFUSION_1D,
+    PDE_TYPE_DIFFUSION_2D,
     T_MIN,
-    BlackScholesPDE,
-    Domain,
-    Option,
-    read_black_scholes_run,  # noqa: F401  (re-exported for `from funcs import ...`)
 )
-
-PDE_TYPE_DIFFUSION_1D = "diff1d"
-PDE_TYPE_DIFFUSION_2D = "diff2d"
-PDE_TYPE_ALLEN_CAHN = "allen_cahn"
 
 
 def black_scholes(
@@ -50,9 +46,10 @@ def black_scholes(
         t_max=float(t_max_str),
     )
     t_max = black_scholes_pde.t_max
-    grid = black_scholes_pde.domain().to_grid()
+    grid = black_scholes_pde.domain.to_grid()
     eq = black_scholes_pde.to_pde()
     state = black_scholes_pde.initial_state(grid)
+    N_TIME_STEPS = black_scholes_pde.domain.nt
 
     store = pde.MemoryStorage(info=black_scholes_pde.to_metadata())
     snapshot_times = [t_max * i / N_TIME_STEPS for i in range(N_TIME_STEPS)]
@@ -69,25 +66,31 @@ def black_scholes(
     times = [t for t, _ in items]
     fields_reversed = [f for _, f in reversed(items)]
 
-    return pde.MemoryStorage.from_fields(times=times, fields=fields_reversed, info=store.info)
+    return pde.MemoryStorage.from_fields(
+        times=times, fields=fields_reversed, info=store.info
+    )
 
 
 def diffusion1d(d_str: str, t_max_str: str) -> pde.MemoryStorage:
     """1D diffusion equation using the preset ``DiffusionPDE``."""
     d, t_max = float(d_str), float(t_max_str)
-    domain = Domain(bounds=((-1.0, 1.0),), shape=(100,))
+    domain = Domain(
+        bounds=((-1.0, 1.0),),
+        resolution=(50,),
+        t_min=T_MIN,
+        t_max=t_max,
+        _t_res=100,
+    )
     grid = domain.to_grid()
     x = grid.cell_coords[..., 0]
     u0 = np.exp(-(x**2) / (2 * 0.1**2))
     state = pde.ScalarField(grid, data=u0)
     eq = DiffusionPDE(d)
+    N_TIME_STEPS = domain.nt
 
     info = {
         "pde_type": PDE_TYPE_DIFFUSION_1D,
         "diffusivity": d,
-        "t_min": T_MIN,
-        "t_max": t_max,
-        "n_times": N_TIME_STEPS,
         "domain": domain.to_metadata(),
     }
     store = pde.MemoryStorage(info=info)
@@ -99,19 +102,21 @@ def diffusion1d(d_str: str, t_max_str: str) -> pde.MemoryStorage:
 def diffusion2d(d_str: str, t_max_str: str) -> pde.MemoryStorage:
     """2D diffusion equation using the preset ``DiffusionPDE`` (works in any dimension)."""
     d, t_max = float(d_str), float(t_max_str)
-    domain = Domain(bounds=((-1.0, 1.0), (-1.0, 1.0)), shape=(50, 50))
+    domain = Domain(
+        bounds=((-1.0, 1.0), (-1.0, 1.0)),
+        resolution=(25, 25),
+        t_max=t_max,
+    )
     grid = domain.to_grid()
     x, y = grid.cell_coords[..., 0], grid.cell_coords[..., 1]
     u0 = np.exp(-(x**2 + y**2) / (2 * 0.1**2))
     state = pde.ScalarField(grid, data=u0)
     eq = DiffusionPDE(d)
+    N_TIME_STEPS = domain.nt
 
     info = {
         "pde_type": PDE_TYPE_DIFFUSION_2D,
         "diffusivity": d,
-        "t_min": T_MIN,
-        "t_max": t_max,
-        "n_times": N_TIME_STEPS,
         "domain": domain.to_metadata(),
     }
     store = pde.MemoryStorage(info=info)
@@ -121,21 +126,25 @@ def diffusion2d(d_str: str, t_max_str: str) -> pde.MemoryStorage:
 
 
 def allen_cahn(eps_str: str, t_max_str: str) -> pde.MemoryStorage:
-    """Allen-Cahn equation (2D) using the preset ``AllenCahnPDE``."""
+    """
+    Allen-Cahn equation (2D) using the preset ``AllenCahnPDE``.
+    Mobility is not supported. (For now.)
+    """
     eps, t_max = float(eps_str), float(t_max_str)
-    domain = Domain(bounds=((-1.0, 1.0), (-1.0, 1.0)), shape=(50, 50))
+    domain = Domain(
+        bounds=((-1.0, 1.0), (-1.0, 1.0)),
+        resolution=(25, 25),
+        t_max=t_max,
+    )
     grid = domain.to_grid()
-    np.random.seed(0)  # reproducible initial condition
+    np.random.seed(0)
     u0 = np.random.uniform(-1, 1, size=grid.shape)
     state = pde.ScalarField(grid, data=u0)
-    eq = AllenCahnPDE(epsilon=eps)  # preset PDE
-
+    eq = AllenCahnPDE(interface_width=eps**2)
+    N_TIME_STEPS = domain.nt
     info = {
         "pde_type": PDE_TYPE_ALLEN_CAHN,
         "epsilon": eps,
-        "t_min": T_MIN,
-        "t_max": t_max,
-        "n_times": N_TIME_STEPS,
         "domain": domain.to_metadata(),
     }
     store = pde.MemoryStorage(info=info)
@@ -148,7 +157,7 @@ def apply_noise(store: pde.MemoryStorage, sig: float) -> pde.MemoryStorage:
     """Add Gaussian noise with standard deviation ``sig`` to every stored field."""
     if sig == 0:
         return store
-    for _, field in store.items():
+    for _, field in store.items():  # noqa: PERF102
         field.data += sig * np.random.normal(size=field.data.shape)
     return store
 

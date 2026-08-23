@@ -1,8 +1,9 @@
-from pinn import FCN, Domain, BlackScholesParams
-import torch
-from torch import nn
-
 import argparse
+
+import torch
+
+from common.classes import BlackScholesPDE, Domain, Option
+from pinn import FCN
 from pinn.pinn_io import save_pinn
 from pinn.plot_heatmap import plot_single, predict_grid
 
@@ -120,7 +121,7 @@ def get_derivatives(output, wrt, num):
     return tuple(derivs)
 
 
-def train(domain: Domain, params: BlackScholesParams):
+def train(domain: Domain, params: BlackScholesPDE):
     # PDE paramenters
     MIN_X = domain.mindim(0)
     MAX_X = domain.maxdim(0)
@@ -132,7 +133,7 @@ def train(domain: Domain, params: BlackScholesParams):
     # PDE parameters
     SIG = params.sigma
     R = params.r
-    STRIKE = params.strike
+    STRIKE = params.k
 
     # Normalize
     X_SCALE = MAX_X - MIN_X
@@ -280,15 +281,17 @@ def main():
         help="Path to where the model should be saved",
     )
     args = parser.parse_args()
-    domain = Domain([(0, 3, 40)], 0, 10, 10)
-    params = BlackScholesParams(strike=0.5, sigma=0.02, r=0.02)
+    domain = Domain(((0, 3),), (40,), 0, 10, 10)
+    params = BlackScholesPDE(
+        option=Option.EUROCALL, k=0.5, sigma=0.02, r=0.02, t_max=10
+    )
     pinn = train(domain, params)
     save_pinn(
         args.saveto,
         pinn,
         pinn.metadata,
-        domain=domain.to_dict(),
-        pde=params.to_dict(),
+        domain=domain.to_metadata(),
+        pde=params.to_metadata(),
     )
     pinn = pinn.to("cpu")
     torch.set_default_device("cpu")

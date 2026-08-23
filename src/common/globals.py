@@ -1,0 +1,9 @@
+PDE_TYPE_DIFFUSION_1D = "diff1d"
+PDE_TYPE_DIFFUSION_2D = "diff2d"
+PDE_TYPE_ALLEN_CAHN = "allen_cahn"
+PDE_TYPE_BLACK_SCHOLES = "black_scholes"
+
+# Some default values
+T_MIN = 0.0
+SPACE_RES_DEFAULT = 10
+TIME_RES_DEFAULT = 20
