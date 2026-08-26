@@ -224,7 +224,7 @@ def train(domain: Domain, params: BlackScholesPDE):
         optimiser.step()
         if i % 500 == 0:
             print(
-                f"[Adam] {i}/3000. Loss: {loss.item():.6e}. "
+                f"[Adam] {i}/7500. Loss: {loss.item():.6e}. "
                 f"L1: {loss1.item():.6e}. L2: {loss2.item():.6e}. "
                 f"L3: {loss3.item():.6e}. L4: {loss4.item():.6e}"
             )
@@ -281,7 +281,13 @@ def main():
         help="Path to where the model should be saved",
     )
     args = parser.parse_args()
-    domain = Domain(((0, 3),), (40,), 0, 10, 10)
+    # Domain's fields are (bounds, resolution, t_max, t_min, _t_res) in that
+    # order -- the previous positional call here was
+    # `Domain(((0, 3),), (40,), 0, 10, 10)`, which silently bound t_max=0
+    # and t_min=10 (inverted), rather than the clearly-intended t_min=0,
+    # t_max=10. Written out with keywords so this can't happen again, and so
+    # it now matches the t_max=10 already passed to BlackScholesPDE below.
+    domain = Domain(bounds=((0, 3),), resolution=(40,), t_min=0.0, t_max=10.0, _t_res=10.0)
     params = BlackScholesPDE(
         option=Option.EUROCALL, k=0.5, sigma=0.02, r=0.02, t_max=10
     )

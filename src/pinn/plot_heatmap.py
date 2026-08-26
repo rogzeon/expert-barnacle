@@ -17,8 +17,8 @@ import torch
 
 from common.classes import Domain
 
-from .model import FCN
-from .pinn_io import load_pinn
+from pinn.model import FCN
+from pinn.pinn_io import load_pinn
 
 
 def predict_grid(
@@ -147,7 +147,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, metadata = load_pinn(args.checkpoint, FCN, device)
 
-    domain = Domain.from_dict(metadata["domain"])
+    domain = Domain.from_metadata(metadata["domain"])
     print(domain)
 
     if args.compare:

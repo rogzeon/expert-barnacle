@@ -160,18 +160,19 @@ class BlackScholesPDE:
     x_max: float | None = None
     x_res: float = SPACE_RES_DEFAULT
     t_res: float = TIME_RES_DEFAULT
+    x_subsampling_factor: int = 1  # <-- new field
 
     @property
     def domain(self) -> Domain:
         """The grid this PDE is solved on, sized relative to the strike."""
         if self.x_max is None:
             raw_upper = self.k * (1 + 5 * self.sigma * math.sqrt(self.t_max))
-            # Domain requires x_res * upper to be an exact integer, but this
-            # heuristic ceiling is generally irrational (it has a sqrt in
-            # it). Round up to the nearest grid-aligned value instead of
-            # failing Domain's guard: this only ever makes the price ceiling
-            # slightly larger than the heuristic minimum, never smaller.
-            n_x = math.ceil(round(raw_upper * self.x_res, 9))
+            n_x_raw = math.ceil(round(raw_upper * self.x_res, 9))
+            factor = self.x_subsampling_factor
+            if factor > 1:
+                n_x = math.ceil(n_x_raw / factor) * factor
+            else:
+                n_x = n_x_raw
             upper = n_x / self.x_res
         else:
             upper = self.x_max

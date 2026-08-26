@@ -4,38 +4,136 @@
 # unchanged.
 
 from pathlib import Path
-
 import numpy as np
-import pde
 import torch
+import pde
 
-from .classes import BlackScholesPDE, Domain
+from .classes import Domain, BlackScholesPDE
+
+
+def _apply_subsampling(
+    fields: list[np.ndarray],
+    domain: Domain,
+    spatial_resolution: int | tuple[int, ...] | None,
+    time_steps: int | None,
+) -> tuple[list[np.ndarray], Domain]:
+    """
+    Apply spatial and/or temporal subsampling using slicing (decimation).
+
+    Spatial subsampling is only possible if the original grid size is an integer
+    multiple of the target size in each dimension.
+
+    Args:
+        fields: List of 1D numpy arrays (each a spatial snapshot).
+        domain: Original Domain object.
+        spatial_resolution: Target grid points per dimension, or None to keep.
+        time_steps: Number of equally spaced snapshots to keep, or None to keep all.
+
+    Returns:
+        (subsampled_fields, updated_domain)
+    """
+    # Temporal subsampling
+    if time_steps is not None:
+        if time_steps < 2:
+            raise ValueError("time_steps must be at least 2 to include endpoints")
+        n_times_orig = len(fields)
+        indices = np.linspace(0, n_times_orig - 1, time_steps, dtype=int)
+        fields = [fields[i] for i in indices]
+
+    # Spatial subsampling (only slicing)
+    # Spatial subsampling (only slicing)
+    if spatial_resolution is not None:
+        old_n = domain.shape[0]  # actual number of points
+        if isinstance(spatial_resolution, int):
+            new_n = spatial_resolution
+        else:
+            new_n = tuple(spatial_resolution)[0]
+        if old_n % new_n != 0:
+            raise ValueError(
+                f"Old resolution {old_n} not divisible by new {new_n}; "
+                "slicing requires integer divisibility."
+            )
+        step = old_n // new_n
+        fields = [f[::step] for f in fields]
+
+        # Update domain resolution (points per unit) to match the new number of points
+        x_min, x_max = domain.bounds[0]
+        new_resolution = new_n / (x_max - x_min)
+        domain = Domain(
+            bounds=domain.bounds,
+            resolution=(new_resolution,),
+            t_max=domain.t_max,
+            t_min=domain.t_min,
+            _t_res=domain._t_res,
+        )  # Update _t_res to match the number of kept snapshots
+    domain = modify_domain(domain, _t_res=len(fields))
+
+    return fields, domain
+
+
+def subsample_hdf5(
+    input_path: str,
+    resolution: int | tuple[int, ...],
+    time_steps: int | None = None,
+) -> torch.Tensor:
+    """
+    Subsample an HDF5‑stored PDE dataset spatially and optionally temporally,
+    using slicing (decimation). The original resolution must be divisible by the
+    target resolution in each dimension.
+
+    Args:
+        input_path: Path to the .hdf5 file.
+        resolution: Target grid points per dimension (int or tuple).
+        time_steps: Number of equally spaced snapshots to keep; if None, keep all.
+
+    Returns:
+        A torch.float32 tensor with shape (n_snapshots, n_spatial_points).
+    """
+    storage = pde.FileStorage(input_path)
+    _, first_field = next(iter(storage.items()))
+    grid = first_field.grid
+
+    # Extract bounds and shape from the grid to build a Domain
+    bounds = tuple((float(lo), float(hi)) for lo, hi in grid.axes_bounds)
+    shape = grid.shape
+    resolution_per_unit = tuple(
+        n / (hi - lo) for (lo, hi), n in zip(grid.axes_bounds, shape)
+    )
+
+    t_min = storage.info.get("t_min", 0.0)
+    t_max = storage.info.get("t_max", 1.0)
+    domain = Domain(
+        bounds=bounds,
+        resolution=resolution_per_unit,
+        t_min=t_min,
+        t_max=t_max,
+        _t_res=len(storage.times),
+    )
+
+    fields = [np.asarray(field.data, dtype=np.float32) for _, field in storage.items()]
+    fields, _ = _apply_subsampling(fields, domain, resolution, time_steps)
+    return torch.tensor(np.stack(fields, axis=0), dtype=torch.float32)
 
 
 def read_black_scholes_run(
     path: str | Path,
+    spatial_resolution: int | tuple[int, ...] | None = None,
+    time_steps: int | None = None,
 ) -> tuple[Domain, BlackScholesPDE, torch.Tensor]:
-    """Read a stored PDE run and reconstruct the domain, PDE, and its data.
+    """
+    Read a stored PDE run and reconstruct the domain, PDE, and data,
+    with optional spatial/temporal subsampling using slicing.
+
+    Slicing requires that the original grid size is an integer multiple of the
+    target size in each dimension.
 
     Args:
-        path: Path to an HDF5 file previously written by ``data_gen.py``.
+        path: Path to an HDF5 file created by ``data_gen.py``.
+        spatial_resolution: Target grid points (int or tuple). If None, no spatial subsampling.
+        time_steps: Number of equally spaced snapshots to keep. If None, keep all.
 
     Returns:
-        A ``(domain, black_scholes_pde, data)`` tuple:
-
-        - ``domain.to_grid()`` rebuilds the grid the data lives on.
-        - ``black_scholes_pde.to_pde()`` and ``.initial_state(grid)`` rebuild
-          the PDE and its t=0 condition.
-        - ``data`` is a ``torch.float32`` tensor of shape
-          ``(n_times, n_x)`` holding every snapshot recorded during the
-          solve, stacked in forward-chronological order (row 0 is the field
-          at ``domain.t_min``, the last row is the field at ``domain.t_max``).
-          This can be used directly as regression targets for a data-fitting
-          loss when training a model (e.g. a PINN) against this run.
-
-    Raises:
-        ValueError: If the file has no metadata, or the metadata does not
-            describe a valid black_scholes run.
+        (domain, black_scholes_pde, data) where data is a torch.float32 tensor.
     """
     with pde.FileStorage(path, write_mode="readonly") as store:
         info = dict(store.info)
@@ -52,6 +150,29 @@ def read_black_scholes_run(
     except KeyError as e:
         raise ValueError(f"black_scholes metadata missing field: {e}") from e
 
-    data = torch.tensor(np.stack(fields, axis=0), dtype=torch.float32)
+    # Apply subsampling if requested
+    if spatial_resolution is not None or time_steps is not None:
+        fields, domain = _apply_subsampling(
+            fields, domain, spatial_resolution, time_steps
+        )
 
+    data = torch.tensor(np.stack(fields, axis=0), dtype=torch.float32)
     return domain, black_scholes_pde, data
+
+
+def modify_domain(
+    domain: Domain,
+    bounds: tuple[tuple[float, float], ...] | None = None,
+    resolution: tuple[float, ...] | None = None,
+    t_max: float | None = None,
+    t_min: float | None = None,
+    _t_res: float | None = None,
+) -> Domain:
+    """Return a new Domain with the given parameters overridden."""
+    return Domain(
+        bounds=bounds if bounds is not None else domain.bounds,
+        resolution=resolution if resolution is not None else domain.resolution,
+        t_max=t_max if t_max is not None else domain.t_max,
+        t_min=t_min if t_min is not None else domain.t_min,
+        _t_res=_t_res if _t_res is not None else domain._t_res,
+    )

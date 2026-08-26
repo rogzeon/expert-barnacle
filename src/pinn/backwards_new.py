@@ -153,6 +153,74 @@ def get_derivatives(output, wrt, num):
     return tuple(derivs)
 
 
+class KinkConstrainedFCN(torch.nn.Module):
+    """FCN wrapped in a hard constraint that bakes the option payoff's kink
+    into the architecture, instead of asking a smooth (SiLU) network to
+    learn a non-differentiable function on its own.
+
+    The ansatz is
+
+        u(x, t) = w(t) * payoff(x) + (1 - w(t)) * base_net(x, t)
+
+    where w(t_max) = 1 exactly, so at exercise the output is *exactly* the
+    payoff (the initial condition is a hard constraint, not a soft loss
+    term), and w decays smoothly (a Gaussian bump centered at t_max) away
+    from expiry, handing off to the network everywhere else. The network
+    never has to represent the kink itself -- it only ever needs to learn
+    a blend/correction that's smooth everywhere the true (diffused)
+    solution is smooth, i.e. everywhere t < t_max.
+
+    Constructed from flat kwargs (rather than wrapping an already-built
+    FCN instance) so it's reconstructable from a saved ``arch`` dict via
+    ``model_cls(**arch)``, matching pinn_io.py's save_pinn/load_pinn
+    contract -- see the note in train() about updating eval scripts to
+    load with this class instead of plain FCN.
+    """
+
+    def __init__(
+        self,
+        input_dim,
+        output_dim,
+        hidden_dim,
+        num_layers,
+        strike,
+        t_max,
+        kink_width,
+    ):
+        super().__init__()
+        self.base_net = FCN(input_dim, output_dim, hidden_dim, num_layers)
+        self.strike = strike
+        self.t_max = t_max
+        self.kink_width = kink_width
+        self.metadata = {
+            "input_dim": input_dim,
+            "output_dim": output_dim,
+            "hidden_dim": hidden_dim,
+            "num_layers": num_layers,
+            "strike": strike,
+            "t_max": t_max,
+            "kink_width": kink_width,
+        }
+
+    def payoff(self, x):
+        return torch.clamp(x - self.strike, min=0.0)
+
+    def weight(self, t):
+        # Gaussian bump: exactly 1 at t=t_max, decays fast moving away from
+        # it. kink_width controls how quickly the payoff hands off to the
+        # network -- too wide and the network is still fighting the kink
+        # over a large region; too narrow and the transition itself can
+        # introduce sharp curvature in w(t) for the physics loss to fight
+        # instead. Tune alongside NUM_PTS_T / the physics collocation density.
+        return torch.exp(-(((self.t_max - t) / self.kink_width) ** 2))
+
+    def forward(self, xt):
+        x = xt[:, 0:1]
+        t = xt[:, 1:2]
+        w = self.weight(t)
+        return w * self.payoff(x) + (1 - w) * self.base_net(xt)
+
+
 def train(domain: Domain, params: BlackScholesPDE, data: torch.Tensor):
     torch.manual_seed(123)
     # PDE paramenters
@@ -207,7 +275,21 @@ def train(domain: Domain, params: BlackScholesPDE, data: torch.Tensor):
     print(f"Shape of data_inputs (x,t): {data_inputs.shape}")
 
     # PINN setup
-    pinn = FCN(2, 1, 64, 3)
+    # KINK_WIDTH is in the same normalized [0,1] time units as everything
+    # else here. 0.05 means the payoff dominates within roughly the last
+    # 5-10% of the time-to-maturity window and the network handles the
+    # rest -- tune this alongside how sharply your solve's kink actually
+    # smooths out (governed by sigma and grid resolution).
+    KINK_WIDTH = 0.05
+    pinn = KinkConstrainedFCN(
+        input_dim=2,
+        output_dim=1,
+        hidden_dim=64,
+        num_layers=3,
+        strike=STRIKE,
+        t_max=MAX_T,
+        kink_width=KINK_WIDTH,
+    )
 
     # Learn log(sigma) rather than sigma directly. sig_est**2 has a zero
     # gradient exactly at 0, which makes 0 a spuriously stable fixed point
@@ -219,7 +301,7 @@ def train(domain: Domain, params: BlackScholesPDE, data: torch.Tensor):
     # degenerate there. Initialize from SIG (the actual, properly rescaled
     # volatility for this normalized domain) rather than an arbitrary
     # constant, so the starting point is already in the right ballpark.
-    sig_init = params.sigma
+    sig_init = 0.05
     sig_init_scaled = sig_init * (T_SCALE**0.5)
     print(T_SCALE)
     print(sig_init_scaled)
@@ -241,13 +323,13 @@ def train(domain: Domain, params: BlackScholesPDE, data: torch.Tensor):
         ]
     )
     # optim_sig = torch.optim.Adam([log_sig_est], 0.9, (0.55, 0.99))
-    optim_sig = torch.optim.SGD([log_sig_est], 150, 0.25)
+    optim_sig = torch.optim.SGD([log_sig_est], 1, 0.8)
     # lambda2 (physics loss weight) is raised relative to lambda1/lambda3:
     # the physics residual is naturally much smaller in scale than the data/
     # boundary losses, so at equal weighting it contributes almost nothing
     # to the total gradient — which means log_sig_est's only source of
     # signal barely factors into training at all. Tune further if needed.
-    lambda1, lambda2, lambda3 = 0.5, 5, 0.1
+    lambda1, lambda2, lambda3 = 1, 5, 2
     print(boundary_inputs.std(dim=0))
     print(u0_target.var().item())
 
@@ -298,7 +380,7 @@ def train(domain: Domain, params: BlackScholesPDE, data: torch.Tensor):
         )
         return loss, data_loss, boundary_left_loss, boundary_right_loss, loss_phys
 
-    for i in range(8001):
+    for i in range(200001):
         if not sigma_phase:
             optim_net.zero_grad()
 
@@ -319,7 +401,7 @@ def train(domain: Domain, params: BlackScholesPDE, data: torch.Tensor):
                 f"L3(bdry_right): {loss3.item():.6e}. L4(phys): {loss4.item():.6e}. "
                 f"sig: {torch.exp(log_sig_est).item():.6e}"
             )
-        if i % 1000 == 950:
+        if i % 2000 == 1820:
             sigma_phase = True
             print(f"Switch phase to: {sigma_phase}")
             # optim_sig = torch.optim.Adam(
@@ -330,7 +412,7 @@ def train(domain: Domain, params: BlackScholesPDE, data: torch.Tensor):
             for param in pinn.parameters():
                 param.requires_grad_(not sigma_phase)
             log_sig_est.requires_grad_(sigma_phase)
-        if i % 1000 == 0:
+        if i % 2000 == 0:
             sigma_phase = False
             print(f"Switch phase to: {sigma_phase}")
             for param in pinn.parameters():
@@ -393,14 +475,16 @@ def main():
         "-s",
         "--saveto",
         type=str,
-        default="models/pinn_backward.pt",
+        default="models/pinn_backward_new.pt",
         help="Path to where the model should be saved",
     )
     args = parser.parse_args()
 
     # Load the domain/PDE params this run was solved with, plus the actual
     # solved field values as a tensor to train against.
-    domain, params, data = read_black_scholes_run(args.data)
+    domain, params, data = read_black_scholes_run(
+        args.data, spatial_resolution=20, time_steps=20
+    )
     domain = modify_domain(domain, resolution=(100,), _t_res=50)
     pinn, sig_est_final, sig_hist = train(domain, params, data)
     plt.figure(figsize=(8, 5))
@@ -409,7 +493,7 @@ def main():
     plt.ylabel("Estimated sigma")
     plt.title("Sigma evolution during training")
     plt.grid(True)
-    plt.savefig("phys_loss_hist.png", dpi=150)
+    plt.savefig("sig_loss_hist_new_rate_low.png", dpi=150)
     plt.close()
 
     save_pinn(
