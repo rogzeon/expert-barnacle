@@ -160,7 +160,7 @@ class BlackScholesPDE:
     x_max: float | None = None
     x_res: float = SPACE_RES_DEFAULT
     t_res: float = TIME_RES_DEFAULT
-    x_subsampling_factor: int = 1  # <-- new field
+    x_subsampling_factor: int = 1
 
     @property
     def domain(self) -> Domain:

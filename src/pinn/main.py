@@ -138,7 +138,8 @@ def train(domain: Domain, params: BlackScholesPDE):
     # Normalize
     X_SCALE = MAX_X - MIN_X
     T_SCALE = MAX_T - MIN_T
-    U_SCALE = MAX_X - MIN_X  # same convention as predict_grid's u_scale default
+    U_SCALE = MAX_X - MIN_X
+    _ = U_SCALE
 
     STRIKE = (STRIKE - MIN_X) / X_SCALE
     SIG = SIG * (T_SCALE**0.5)
@@ -287,7 +288,9 @@ def main():
     # and t_min=10 (inverted), rather than the clearly-intended t_min=0,
     # t_max=10. Written out with keywords so this can't happen again, and so
     # it now matches the t_max=10 already passed to BlackScholesPDE below.
-    domain = Domain(bounds=((0, 3),), resolution=(40,), t_min=0.0, t_max=10.0, _t_res=10.0)
+    domain = Domain(
+        bounds=((0, 3),), resolution=(40,), t_min=0.0, t_max=10.0, _t_res=10.0
+    )
     params = BlackScholesPDE(
         option=Option.EUROCALL, k=0.5, sigma=0.02, r=0.02, t_max=10
     )

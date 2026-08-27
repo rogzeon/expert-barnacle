@@ -1,9 +1,8 @@
 import argparse
-import math
 import matplotlib.pyplot as plt
 
 import torch
-from model import FCN
+from model import ConstrainedFCN
 
 from common.classes import BlackScholesPDE, Domain
 from common.funcs import read_black_scholes_run, modify_domain
@@ -12,10 +11,21 @@ from pinn.plot_heatmap import plot_single, predict_grid
 
 
 # The following functions create the IC and/or boundary conditions.
-def initial_condition(t0, x0, **kwargs):
+def initial_condition(t0: float, x0: torch.Tensor, **kwargs):
     """
     Constructs the initial condition off of which to train.
     Modify this function in order to change the IC.
+
+    Args:
+        t0:
+            Initial value of t
+        x0:
+            Tensor representing the values of x at t=t0
+        kwargs:
+            PDE parameters (ex. for diffusion, could contain
+            the diffusion coefficient.)
+
+    Returns a 1D tensor representing the values of the solution at t=t0.
     """
     u0_target = torch.clamp(x0 - kwargs["STRIKE"], min=0)
 
@@ -23,34 +33,66 @@ def initial_condition(t0, x0, **kwargs):
 
 
 # Helpers for create_left/right_boundary, should return the values at respective boundaries
-def boundary_left(space_t_left, **kwargs):
+def boundary_left(space_t_left: torch.Tensor, **kwargs) -> torch.Tensor:
+    """
+    Helper function that builds the x=x_min boundary of the PDE
+
+    Args:
+        space_t_left:
+            A prebuilt linspace from t_min to t_max.
+        kwargs: PDE parameters (ex. for diffusion, could contain
+            the diffusion coefficient.)
+
+    Returns a 1D tensor representing the x=x_min boundary.
+    """
     return torch.zeros_like(space_t_left.flatten())
 
 
-def boundary_right(space_t_right, **kwargs):
+def boundary_right(space_t_right: torch.Tensor, **kwargs) -> torch.Tensor:
+    """
+    Helper function that builds the x=x_max boundary of the PDE
+
+    Args:
+        space_t_left: A prebuilt linspace from t_min to t_max.
+        kwargs: PDE parameters (ex. for diffusion, could contain
+            the diffusion coefficient.
+
+    Returns a tensor representing the x=x_max boundary.
+    """
     return kwargs["S_MAX"] - kwargs["STRIKE"] * torch.exp(
         -kwargs["R"] * (kwargs["T_MAX"] - space_t_right.flatten())
     )
 
 
-# Functions below use functions above in order to generate IC.
-# Modify functions above to change IC
-def create_t0_boundary(x_min, x_max, num_pts, t0=0.0, **kwargs):
+def create_left_boundary(
+    t_boundary_x_limits: torch.Tensor, x_min: float, **kwargs
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Helper function used to generate the meshgrid and the initial condition array.
+    Create input points and target values for the x = ``x_min`` boundary.
+
+    The boundary points are formed by pairing the fixed ``x_min`` with each temporal
+    coordinate in ``t_boundary_x_limits``. The target values are computed by calling
+    ``boundary_left()`` with the temporal grid and any additional PDE parameters
+    provided in kwargs.
+
+    Args:
+        t_boundary_x_limits:
+            A 1D tensor of temporal coordinates at which to evaluate the boundary,
+            typically a linspace from t_min to t_max. Requires gradients enabled.
+        x_min:
+            The spatial coordinate of the left boundary
+        **kwargs:
+            PDE parameters (ex. for diffusion, could contain
+            the diffusion coefficient.) to be passed to ``boundary_left()``
+
+    Returns:
+        boundary_inputs_left:
+            A 2D tensor of shape (N, 2) where each row is (x, t) for the boundary
+            points, with x = ``x_min`` for all points.
+        boundary_values_left:
+            A 2D tensor of shape (N, 1) containing the corresponding target
+            boundary values from ``boundary_left()``.
     """
-    # define boundary points, for the boundary loss
-    t0_tf = torch.tensor(t0, dtype=torch.float32).requires_grad_(True)
-    x0 = torch.linspace(x_min, x_max, num_pts).requires_grad_(True)
-    space_x, space_t = torch.meshgrid(x0, t0_tf, indexing="ij")
-
-    u0 = initial_condition(t0, x0, **kwargs)
-    u0 = tuple(v.view(-1, 1) for v in u0)
-
-    return (space_x, space_t, *u0)
-
-
-def create_left_boundary(t_boundary_x_limits, x_min, **kwargs):
     x_left = torch.tensor(x_min, dtype=torch.float32).requires_grad_(True)
     space_x_left, space_t_left = torch.meshgrid(
         x_left, t_boundary_x_limits, indexing="ij"
@@ -62,7 +104,9 @@ def create_left_boundary(t_boundary_x_limits, x_min, **kwargs):
     return boundary_inputs_left, boundary_values_left
 
 
-def create_right_boundary(t_boundary_x_limits, x_max, **kwargs):
+def create_right_boundary(
+    t_boundary_x_limits: torch.Tensor, x_max: float, **kwargs
+) -> tuple[torch.Tensor, torch.Tensor]:
     x_right = torch.tensor(x_max, dtype=torch.float32).requires_grad_(True)
     space_x_right, space_t_right = torch.meshgrid(
         x_right, t_boundary_x_limits, indexing="ij"
@@ -74,26 +118,33 @@ def create_right_boundary(t_boundary_x_limits, x_max, **kwargs):
     return boundary_inputs_right, boundary_values_right
 
 
-def create_data_points(data, x_min, x_max, t_min, t_max, x_scale):
+def create_data_points(
+    data: torch.Tensor,
+    x_min: float,
+    x_max: float,
+    t_min: float,
+    t_max: float,
+    x_scale: float,
+):
     """
     Build (x, t) input points and matching targets from a stored PDE run's
     solution tensor, in the same normalized [0, 1] x [0, 1] space used
     everywhere else in this module.
 
     Args:
-        data: Tensor of shape (n_times, n_x), forward-chronological, as
-            returned by ``read_black_scholes_run``.
-        x_min, x_max, t_min, t_max: Normalized domain bounds (0.0 and 1.0
-            in this module, since x/t are rescaled before this is called).
-        x_scale: The physical range of the spatial domain (``X_SCALE`` in
-            ``train``), used to put the raw PDE values into the same
-            normalized units as ``u0_target``.
+        data: The solved PDE field values (forward-chronological).
+        x_min: Spatial domain lower bound.
+        x_max: Spatial domain upper bound.
+        t_min: Temporal domain lower bound.
+        t_max: Temporal domain upper bound.
+        x_scale: The physical range of the spatial domain, used to normalize
+            the PDE values to match the rest of the model's targets.
 
     Returns:
-        A ``(data_inputs, u_real)`` tuple: ``data_inputs`` has shape
-        (n_times * n_x, 2) with columns (x, t); ``u_real`` has shape
-        (n_times * n_x, 1) and is normalized by ``x_scale`` to match the
-        rest of the model's targets.
+        data_inputs:
+            Tensor with columns (x, t) representing the input points.
+        u_real:
+            Tensor containing the corresponding normalized target values.
     """
     n_times, n_x = data.shape
     x_data = torch.linspace(x_min, x_max, n_x)
@@ -108,13 +159,40 @@ def create_data_points(data, x_min, x_max, t_min, t_max, x_scale):
 
 
 # The following function(s) help set up training
-def gen_phys_training_pts(min_t, max_t, min_x, max_x, num_pts_t, num_pts_x):
+def gen_phys_training_pts(
+    min_t: float,
+    max_t: float,
+    min_x: float,
+    max_x: float,
+    num_pts_t: int,
+    num_pts_x: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Generates physics loss training points for the PDE.
-    Modify as needed for higher-dimensional PDEs.
+    Generate a grid of (x, t) training points for the physics loss (PDE residual)
+    evaluation, in the normalized [0, 1] x [0, 1] space used elsewhere in
+    this module.
 
-    First return values are vectors for use with autograd,
-    final return value is for input to the PINN.
+    Args:
+        min_t:
+            Temporal domain lower bound.
+        max_t:
+            Temporal domain upper bound.
+        min_x:
+            Spatial domain lower bound.
+        max_x:
+            Spatial domain upper bound.
+        num_pts_t:
+            Number of points along the temporal dimension.
+        num_pts_x:
+            Number of points along the spatial dimension.
+
+    Returns:
+        flattened_t_physics:
+            1D tensor of temporal coordinates with gradients enabled.
+        flattened_x_physics:
+            1D tensor of spatial coordinates with gradients enabled.
+        phys_inputs:
+            2D tensor with columns (x, t) suitable for PINN input.
     """
     t_physics_1d = torch.linspace(min_t, max_t, num_pts_t).requires_grad_(True)
     x_physics_1d = torch.linspace(min_x, max_x, num_pts_x).requires_grad_(True)
@@ -129,7 +207,28 @@ def gen_phys_training_pts(min_t, max_t, min_x, max_x, num_pts_t, num_pts_x):
     return flattened_t_physics, flattened_x_physics, phys_inputs
 
 
-def get_derivatives(output, wrt, num):
+def get_derivatives(
+    output: torch.Tensor, wrt: torch.Tensor, num: int
+) -> tuple[torch.Tensor, ...]:
+    """
+    Simple function that outputs the first num derivatives
+    of the ``output`` tensor w.r.t the ``wrt`` tensor, and returns them
+    as a tuple, so that they can be nicely unpacked.
+
+    Args:
+        output:
+            A tensor whose derivative(s) will be calculated.
+        wrt:
+            The tensor that output is being
+            differentiated with respect to.
+        num:
+            The number of derivatives to return
+
+    Returns:
+        derivs:
+            A tuple containing the first num derivatives of ``output``.
+
+    """
     derivs = []
     for _ in range(num):
         # First derivative w.r.t. x
@@ -153,7 +252,33 @@ def get_derivatives(output, wrt, num):
     return tuple(derivs)
 
 
-def train(domain: Domain, params: BlackScholesPDE, data: torch.Tensor):
+def train(
+    domain: Domain, params: BlackScholesPDE, data: torch.Tensor
+) -> tuple[ConstrainedFCN, float, list[float]]:
+    """
+    Trains a PINN in order to calculate sigma.
+
+    Args:
+        domain:
+            A ``Domain`` object which specifies the distribution of
+            physics training points.
+        params:
+            A ``BlackScholesPDE`` object specifying observable
+            parameters of the equation.
+        data:
+            a ``Tensor`` containing the data from which to estimate
+            sigma.
+
+    Returns:
+        pinn:
+            The trained network.
+        sig_est_final:
+            The final estimate of sigma.
+        sig_history:
+            A list containing all estimates for sigma
+            throughout training.
+
+    """
     torch.manual_seed(123)
     # PDE paramenters
     MIN_X = domain.mindim(0)
@@ -163,10 +288,7 @@ def train(domain: Domain, params: BlackScholesPDE, data: torch.Tensor):
     MAX_T = domain.t_max
     NUM_PTS_T = domain.nt
 
-    # Physical (unnormalized) contract parameters. These are the single
-    # source of truth for this run — the same `params` object gets saved
-    # into the checkpoint (see main()) so eval_analytical.py can read them
-    # back out instead of hardcoding its own copy that can drift out of sync.
+    # Unnormalized contract parameters.
     SIG = params.sigma
     R = params.r
     STRIKE = params.k
@@ -174,7 +296,8 @@ def train(domain: Domain, params: BlackScholesPDE, data: torch.Tensor):
     # Normalize
     X_SCALE = MAX_X - MIN_X
     T_SCALE = MAX_T - MIN_T
-    U_SCALE = MAX_X - MIN_X  # same convention as predict_grid's u_scale default
+    U_SCALE = MAX_X - MIN_X
+    _ = U_SCALE
 
     STRIKE = (STRIKE - MIN_X) / X_SCALE
     SIG = SIG * (T_SCALE**0.5)
@@ -183,11 +306,6 @@ def train(domain: Domain, params: BlackScholesPDE, data: torch.Tensor):
     MIN_T, MAX_T = 0.0, 1.0
 
     # Setup
-    space_x, space_t, u0_target = create_t0_boundary(
-        MIN_X, MAX_X, NUM_PTS_X, MAX_T, STRIKE=STRIKE
-    )
-    boundary_inputs = torch.stack((space_x.flatten(), space_t.flatten()), dim=-1)
-
     t_boundary_x_limits = torch.linspace(MIN_T, MAX_T, NUM_PTS_T).requires_grad_(True)
     bdry_left, u_bdry_left_tgt = create_left_boundary(t_boundary_x_limits, MIN_X)
     bdry_right, u_bdry_right_tgt = create_right_boundary(
@@ -207,57 +325,46 @@ def train(domain: Domain, params: BlackScholesPDE, data: torch.Tensor):
     print(f"Shape of data_inputs (x,t): {data_inputs.shape}")
 
     # PINN setup
-    pinn = FCN(2, 1, 64, 3)
+    KINK_WIDTH = 0.05
+    pinn = ConstrainedFCN(
+        input_dim=2,
+        output_dim=1,
+        hidden_dim=64,
+        num_layers=3,
+        strike=STRIKE,
+        t_max=MAX_T,
+        kink_width=KINK_WIDTH,
+    )
 
-    # Learn log(sigma) rather than sigma directly. sig_est**2 has a zero
-    # gradient exactly at 0, which makes 0 a spuriously stable fixed point
-    # once the data/boundary terms dominate the loss (their gradient signal
-    # swamps whatever weak, possibly-noisy physics gradient would otherwise
-    # nudge sig_est away from 0). Parameterizing in log-space removes that
-    # fixed point entirely — exp(log_sig_est) can get arbitrarily close to 0
-    # but never reach it, and the gradient w.r.t. log_sig_est doesn't
-    # degenerate there. Initialize from SIG (the actual, properly rescaled
-    # volatility for this normalized domain) rather than an arbitrary
-    # constant, so the starting point is already in the right ballpark.
-    sig_init = params.sigma
+    # Initial guess for sigma
+    sig_init = 0.05
     sig_init_scaled = sig_init * (T_SCALE**0.5)
-    print(T_SCALE)
-    print(sig_init_scaled)
-    print(SIG)
-    print(params.sigma)
+
+    # Train against the logarithm of sigma, in order to improve
     log_sig_est = torch.nn.Parameter(
         torch.log(torch.tensor([sig_init_scaled])).view(-1, 1)
     )
 
     sig_history = []
 
-    # Give log_sig_est its own learning rate: it's a single scalar competing
-    # for gradient signal against a multi-thousand-parameter network, and
-    # its gradient only ever comes from the (comparatively small) physics
-    # loss, so the network's default lr is a poor fit for it.
+    # Sigma & the network require different learning rates,
+    # (and separate training cycles appear to produce better results),
+    # so they have separate optimisers.
     optim_net = torch.optim.Adam(
         [
             {"params": pinn.parameters(), "lr": 5e-4},
         ]
     )
     # optim_sig = torch.optim.Adam([log_sig_est], 0.9, (0.55, 0.99))
-    optim_sig = torch.optim.SGD([log_sig_est], 150, 0.25)
-    # lambda2 (physics loss weight) is raised relative to lambda1/lambda3:
-    # the physics residual is naturally much smaller in scale than the data/
-    # boundary losses, so at equal weighting it contributes almost nothing
-    # to the total gradient — which means log_sig_est's only source of
-    # signal barely factors into training at all. Tune further if needed.
-    lambda1, lambda2, lambda3 = 0.5, 5, 0.1
-    print(boundary_inputs.std(dim=0))
-    print(u0_target.var().item())
+    optim_sig = torch.optim.SGD([log_sig_est], 1, 0.8)
 
+    # lambda2 (physics loss weight) is raised relative to lambda1/lambda3, as
+    # the physics residual is smaller in scale than the data/boundary losses.
+    lambda1, lambda2, lambda3 = 1, 5, 2
+
+    # sigma_phase determines whether sigma or the PINN are being trained
+    # during the training loop.
     sigma_phase = False
-
-    with torch.no_grad():
-        test_x = torch.linspace(0, 1, 10).unsqueeze(1)
-        test_t = torch.ones_like(test_x)
-        test_in = torch.cat([test_x, test_t], dim=1)
-        print(pinn(test_in).flatten())
 
     def compute_loss():
         # Data loss: fit the PINN to the actual solved PDE run.
@@ -298,7 +405,7 @@ def train(domain: Domain, params: BlackScholesPDE, data: torch.Tensor):
         )
         return loss, data_loss, boundary_left_loss, boundary_right_loss, loss_phys
 
-    for i in range(8001):
+    for i in range(200001):
         if not sigma_phase:
             optim_net.zero_grad()
 
@@ -319,63 +426,31 @@ def train(domain: Domain, params: BlackScholesPDE, data: torch.Tensor):
                 f"L3(bdry_right): {loss3.item():.6e}. L4(phys): {loss4.item():.6e}. "
                 f"sig: {torch.exp(log_sig_est).item():.6e}"
             )
-        if i % 1000 == 950:
+        if i % 2000 == 1820:
             sigma_phase = True
-            print(f"Switch phase to: {sigma_phase}")
-            # optim_sig = torch.optim.Adam(
-            #     [
-            #         {"params": [log_sig_est], "lr": 5e-2},
-            #     ]
-            # )
+            print("Switch phase to: 'Training sigma'")
             for param in pinn.parameters():
                 param.requires_grad_(not sigma_phase)
             log_sig_est.requires_grad_(sigma_phase)
-        if i % 1000 == 0:
+        if i % 2000 == 0:
             sigma_phase = False
-            print(f"Switch phase to: {sigma_phase}")
+            print("Switch phase to: 'Training network'")
             for param in pinn.parameters():
                 param.requires_grad_(not sigma_phase)
             log_sig_est.requires_grad_(sigma_phase)
 
-    # log_sig_est needs to be included here too -- LBFGS was previously only
-    # given pinn.parameters(), so the entire second training phase silently
-    # dropped the sigma estimate from optimization.
-    # lbfgs = torch.optim.LBFGS(
-    #     list(pinn.parameters()) + [log_sig_est],
-    #     lr=1.0,
-    #     max_iter=2000,
-    #     tolerance_grad=1e-9,
-    #     tolerance_change=1e-12,
-    #     history_size=50,
-    #     line_search_fn="strong_wolfe",
-    # )
-    #
-    # lbfgs_steps = [0]
-    #
-    # def closure():
-    #     lbfgs.zero_grad()
-    #     loss, loss1, loss2, loss3, loss4 = compute_loss()
-    #     loss.backward(retain_graph=True)
-    #     if lbfgs_steps[0] % 200 == 0:
-    #         print(
-    #             f"[LBFGS] step {lbfgs_steps[0]}. Loss: {loss.item():.6e}. "
-    #             f"L1(data): {loss1.item():.6e}. L2(bdry_left): {loss2.item():.6e}. "
-    #             f"L3(bdry_right): {loss3.item():.6e}. L4(phys): {loss4.item():.6e}"
-    #         )
-    #     lbfgs_steps[0] += 1
-    #     return loss
-    #
-    # lbfgs.step(closure)
-    #
     loss, loss1, loss2, loss3, loss4 = compute_loss()
     sig_est_final = torch.exp(log_sig_est).item()
+    sig_est_final_scaled = sig_est_final / T_SCALE
     print(
         f"[FINAL] Loss: {loss.item():.6e}. "
         f"L1(data): {loss1.item():.6e}. L2(bdry_left): {loss2.item():.6e}. "
         f"L3(bdry_right): {loss3.item():.6e}. L4(phys): {loss4.item():.6e}. "
     )
-    print(f"[FINAL] est. sigma:{sig_est_final} true sigma:{SIG}")
-    return pinn, sig_est_final, sig_history
+    print(
+        f"[FINAL] est. sigma:{sig_est_final_scaled:.6e} true sigma:{params.sigma:.6e}"
+    )
+    return pinn, sig_est_final_scaled, sig_history
 
 
 def main():
@@ -393,14 +468,16 @@ def main():
         "-s",
         "--saveto",
         type=str,
-        default="models/pinn_backward.pt",
+        default="models/pinn_backward_new.pt",
         help="Path to where the model should be saved",
     )
     args = parser.parse_args()
 
     # Load the domain/PDE params this run was solved with, plus the actual
     # solved field values as a tensor to train against.
-    domain, params, data = read_black_scholes_run(args.data)
+    domain, params, data = read_black_scholes_run(
+        args.data, spatial_resolution=20, time_steps=20
+    )
     domain = modify_domain(domain, resolution=(100,), _t_res=50)
     pinn, sig_est_final, sig_hist = train(domain, params, data)
     plt.figure(figsize=(8, 5))
@@ -409,7 +486,7 @@ def main():
     plt.ylabel("Estimated sigma")
     plt.title("Sigma evolution during training")
     plt.grid(True)
-    plt.savefig("phys_loss_hist.png", dpi=150)
+    plt.savefig("sig_loss_hist_new_rate_low.png", dpi=150)
     plt.close()
 
     save_pinn(

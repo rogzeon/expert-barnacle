@@ -53,12 +53,6 @@ def black_scholes(
     N_TIME_STEPS = black_scholes_pde.domain.nt
 
     store = pde.MemoryStorage(info=black_scholes_pde.to_metadata())
-    # tau (time-to-maturity) grid: inclusive of both endpoints, matching the
-    # convention diffusion1d/diffusion2d/allen_cahn already use. This matters
-    # here specifically because the reversal below (mapping tau -> real
-    # calendar time, with exercise at t_max rather than 0) is only exact when
-    # the tau grid is symmetric: t_max - tau_i == tau_{N-1-i} holds precisely
-    # for an inclusive linspace, but not for a grid that excludes t_max.
     snapshot_times = np.linspace(black_scholes_pde.t_min, t_max, N_TIME_STEPS)
     eq.solve(
         state,
@@ -71,8 +65,7 @@ def black_scholes(
     # store.tracker() records fields in tau (time-to-maturity) order, with
     # the payoff at tau=0. Reversing fields (but not times) here remaps that
     # onto real calendar time, so the payoff ends up at t_max (exercise) and
-    # tau=t_max ends up at real time 0 -- see the snapshot_times comment
-    # above for why this requires an inclusive, symmetric tau grid.
+    # tau=t_max ends up at real time 0
     items = list(store.items())
     times = [t for t, _ in items]
     fields_reversed = [f for _, f in reversed(items)]

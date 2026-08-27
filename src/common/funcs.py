@@ -1,8 +1,3 @@
-# Every black_scholes solve starts at t=0 and records this many snapshots up
-# to t_max. Stored in metadata (as "t_min" / "n_times") so a run's time
-# resolution can be reconstructed later without relying on this staying
-# unchanged.
-
 from pathlib import Path
 import numpy as np
 import torch
@@ -41,13 +36,12 @@ def _apply_subsampling(
         fields = [fields[i] for i in indices]
 
     # Spatial subsampling (only slicing)
-    # Spatial subsampling (only slicing)
     if spatial_resolution is not None:
         old_n = domain.shape[0]  # actual number of points
         if isinstance(spatial_resolution, int):
             new_n = spatial_resolution
         else:
-            new_n = tuple(spatial_resolution)[0]
+            new_n = next(iter(spatial_resolution))
         if old_n % new_n != 0:
             raise ValueError(
                 f"Old resolution {old_n} not divisible by new {new_n}; "
