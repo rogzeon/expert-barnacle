@@ -23,7 +23,6 @@ import torch
 from model import FCN
 
 from common.classes import BlackScholesPDE, Domain, Option
-
 from pinn.pinn_io import load_pinn
 from pinn.plot_heatmap import predict_grid
 

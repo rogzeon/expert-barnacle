@@ -16,7 +16,6 @@ import numpy as np
 import torch
 
 from common.classes import Domain
-
 from pinn.model import FCN
 from pinn.pinn_io import load_pinn
 

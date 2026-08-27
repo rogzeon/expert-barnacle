@@ -1,37 +1,33 @@
+"""
+Solve the Black-Scholes PDE forward in time using a Physics-Informed Neural Network (PINN).
+
+This script trains a simple neural network to approximate the
+solution u(x, t) of the Black-Scholes equation given the contract
+parameters (strike, sigma, r, option type) and the domain. The network
+is trained based using various loss metrics which measure adherence
+to both the boundary conditions and the PDE.
+
+Command-line usage:
+    python main.py -s <save_path>
+
+The trained model is saved to the specified path.
+"""
+
 import argparse
 
 import torch
 
 from common.classes import BlackScholesPDE, Domain, Option
+from common.pinn_helpers import (
+    create_left_boundary,
+    create_right_boundary,
+    gen_phys_training_pts,
+    get_derivatives,
+    initial_condition,
+)
 from pinn import FCN
 from pinn.pinn_io import save_pinn
 from pinn.plot_heatmap import plot_single, predict_grid
-
-
-# The following functions create the IC and/or boundary conditions.
-def initial_condition(t0, x0, **kwargs):
-    """
-    Constructs the initial condition off of which to train.
-    Modify this function in order to change the IC.
-    """
-    u0_target = torch.clamp(x0 - kwargs["STRIKE"], min=0)
-    # eps = 0.0025
-    # k = x0 - kwargs["STRIKE"]
-    # u0_target = (k + torch.sqrt(k**2 + eps)) / 2
-    #   dudt0_target = torch.zeros_like(x0).view(-1, 1).requires_grad_(False)
-
-    return (u0_target,)
-
-
-# Helpers for create_left/right_boundary, should return the values at respective boundaries
-def boundary_left(space_t_left, **kwargs):
-    return torch.zeros_like(space_t_left.flatten())
-
-
-def boundary_right(space_t_right, **kwargs):
-    return kwargs["S_MAX"] - kwargs["STRIKE"] * torch.exp(
-        -kwargs["R"] * (kwargs["T_MAX"] - space_t_right.flatten())
-    )
 
 
 # Functions below use functions above in order to generate IC.
@@ -39,6 +35,30 @@ def boundary_right(space_t_right, **kwargs):
 def create_t0_boundary(x_min, x_max, num_pts, t0=0.0, **kwargs):
     """
     Helper function used to generate the meshgrid and the initial condition array.
+
+    Args:
+        x_min:
+            Spatial domain lower bound.
+        x_max:
+            Spatial domain upper bound.
+        num_pts:
+            Number of points to generate along the spatial dimension.
+        t0:
+            The (fixed) time value at which to build the initial condition.
+            Defaults to 0.0.
+        **kwargs:
+            PDE parameters (ex. for diffusion, could contain
+            the diffusion coefficient.) to be passed to ``initial_condition()``
+
+    Returns:
+        space_x:
+            A 2D tensor (from meshgrid) of spatial coordinates at t=t0.
+        space_t:
+            A 2D tensor (from meshgrid) of the constant t0 value, matching
+            the shape of space_x.
+        u0:
+            The initial condition target tensor(s) returned by
+            ``initial_condition()``, each reshaped to (N, 1).
     """
     # define boundary points, for the boundary loss
     t0_tf = torch.tensor(t0, dtype=torch.float32).requires_grad_(True)
@@ -51,77 +71,22 @@ def create_t0_boundary(x_min, x_max, num_pts, t0=0.0, **kwargs):
     return (space_x, space_t, *u0)
 
 
-def create_left_boundary(t_boundary_x_limits, x_min, **kwargs):
-    x_left = torch.tensor(x_min, dtype=torch.float32).requires_grad_(True)
-    space_x_left, space_t_left = torch.meshgrid(
-        x_left, t_boundary_x_limits, indexing="ij"
-    )
-    boundary_inputs_left = torch.stack(
-        (space_x_left.flatten(), space_t_left.flatten()), dim=-1
-    )
-    boundary_values_left = boundary_left(space_t_left, **kwargs).view(-1, 1)
-    return boundary_inputs_left, boundary_values_left
-
-
-def create_right_boundary(t_boundary_x_limits, x_max, **kwargs):
-    x_right = torch.tensor(x_max, dtype=torch.float32).requires_grad_(True)
-    space_x_right, space_t_right = torch.meshgrid(
-        x_right, t_boundary_x_limits, indexing="ij"
-    )
-    boundary_inputs_right = torch.stack(
-        (space_x_right.flatten(), space_t_right.flatten()), dim=-1
-    )
-    boundary_values_right = boundary_right(space_t_right, **kwargs).view(-1, 1)
-    return boundary_inputs_right, boundary_values_right
-
-
-# The following function(s) help set up training
-def gen_phys_training_pts(min_t, max_t, min_x, max_x, num_pts_t, num_pts_x):
-    """
-    Generates physics loss training points for the PDE.
-    Modify as needed for higher-dimensional PDEs.
-
-    First return values are vectors for use with autograd,
-    final return value is for input to the PINN.
-    """
-    t_physics_1d = torch.linspace(min_t, max_t, num_pts_t).requires_grad_(True)
-    x_physics_1d = torch.linspace(min_x, max_x, num_pts_x).requires_grad_(True)
-    space_x_physics, space_t_physics = torch.meshgrid(
-        x_physics_1d, t_physics_1d, indexing="ij"
-    )
-
-    flattened_x_physics = space_x_physics.flatten()
-    flattened_t_physics = space_t_physics.flatten()
-    phys_inputs = torch.stack((flattened_x_physics, flattened_t_physics), dim=-1)
-
-    return flattened_t_physics, flattened_x_physics, phys_inputs
-
-
-def get_derivatives(output, wrt, num):
-    derivs = []
-    for _ in range(num):
-        # First derivative w.r.t. x
-        if len(derivs) == 0:
-            ddx = torch.autograd.grad(
-                output,
-                wrt,
-                torch.ones_like(output),
-                create_graph=True,
-            )[0].view(-1, 1)
-        else:
-            ddx = torch.autograd.grad(
-                derivs[-1],
-                wrt,
-                torch.ones_like(derivs[-1]),
-                create_graph=True,
-            )[0].view(-1, 1)
-
-        derivs.append(ddx)
-
-    return tuple(derivs)
-
-
 def train(domain: Domain, params: BlackScholesPDE):
+    """
+    Trains a PINN in order to solve the Black-Scholes PDE forward in time.
+
+    Args:
+        domain:
+            A ``Domain`` object which specifies the distribution of
+            physics training points.
+        params:
+            A ``BlackScholesPDE`` object specifying observable
+            parameters of the equation.
+
+    Returns:
+        pinn:
+            The trained network.
+    """
     # PDE paramenters
     MIN_X = domain.mindim(0)
     MAX_X = domain.maxdim(0)
@@ -267,6 +232,14 @@ def train(domain: Domain, params: BlackScholesPDE):
 
 
 def main():
+    """
+    Executes the following tasks:
+        1. Parse command-line arguments
+        2. set up the domain and PDE parameters,
+        3. PINN training
+        4. Save model to path given by ``--saveto``
+        5. generate a heatmap plot of the PINN output
+    """
     device = "cpu"
     if torch.cuda.is_available():
         device = "cuda"
@@ -282,12 +255,6 @@ def main():
         help="Path to where the model should be saved",
     )
     args = parser.parse_args()
-    # Domain's fields are (bounds, resolution, t_max, t_min, _t_res) in that
-    # order -- the previous positional call here was
-    # `Domain(((0, 3),), (40,), 0, 10, 10)`, which silently bound t_max=0
-    # and t_min=10 (inverted), rather than the clearly-intended t_min=0,
-    # t_max=10. Written out with keywords so this can't happen again, and so
-    # it now matches the t_max=10 already passed to BlackScholesPDE below.
     domain = Domain(
         bounds=((0, 3),), resolution=(40,), t_min=0.0, t_max=10.0, _t_res=10.0
     )

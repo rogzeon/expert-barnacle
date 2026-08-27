@@ -1,7 +1,38 @@
+"""
+Generate synthetic PDE training data and save it in HDF5 format.
+
+This script solves a specified PDE (see below for supported equations)
+over a (currently preset) domain, optionally adds Gaussian noise,
+and writes the results to an .hdf5 file. It also saves the
+command-line arguments used to a separate text file for reproducibility.
+
+May add support for generating data from the saved text files later,
+would be useful for data too large for Github.
+
+Command-line usage:
+    python data_gen.py <destination> <noise_amount> <pde_name> [pde_args...]
+
+Arguments:
+    destination     Base name for output files (without extension).
+    noise_amount    Standard deviation of Gaussian noise to add (0 for no noise).
+    pde_name        One of: black_scholes, allen_cahn, diff1d, diff2d.
+    pde_args        Dependent on specified PDE (see below).
+
+PDE-specific arguments:
+    black_scholes   option_name strike_price sigma r t_max
+                    (option_name: EUROCALL or EUROPUT)
+    allen_cahn      epsilon t_max
+    diff1d          diffusion_coefficient t_max
+    diff2d          diffusion_coefficient t_max
+
+Outputs:
+    <destination>.hdf5         : HDF5 storage of the solved field snapshots.
+    <destination>_args.txt     : Text file recording the arguments used.
+"""
+
 import sys
 
 import pde
-
 from funcs import apply_noise, pdes
 
 if __name__ == "__main__":
