@@ -25,7 +25,7 @@ from common.pinn_helpers import (
     get_derivatives,
     initial_condition,
 )
-from pinn import FCN
+from pinn.model import FCN
 from pinn.pinn_io import save_pinn
 from pinn.plot_heatmap import plot_single, predict_grid
 

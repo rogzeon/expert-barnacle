@@ -23,7 +23,7 @@ import argparse
 
 import matplotlib.pyplot as plt
 import torch
-from model import ConstrainedFCN
+from pinn.model import ConstrainedFCN
 
 from common.classes import BlackScholesPDE, Domain
 from common.funcs import modify_domain, read_black_scholes_run

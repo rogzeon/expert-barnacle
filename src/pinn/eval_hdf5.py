@@ -19,9 +19,9 @@ import sys
 import h5py
 import numpy as np
 import torch
-from pinn_io import load_pinn
+from pinn.pinn_io import load_pinn
 
-from pinn import FCN
+from pinn.model import FCN
 
 
 def load_hdf5(path, x_key, t_key, u_key, flat):

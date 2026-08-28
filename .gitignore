@@ -2,4 +2,4 @@
 *__pycache__
 *.hdf5
 *.pt
-*pyproject.toml
+*.egg-info/

@@ -16,7 +16,7 @@ import pde
 from pde.pdes.allen_cahn import AllenCahnPDE
 from pde.pdes.diffusion import DiffusionPDE
 
-from common.classes import *
+from common.classes import Option, Domain, BlackScholesPDE
 from common.globals import (
     PDE_TYPE_ALLEN_CAHN,
     PDE_TYPE_BLACK_SCHOLES,

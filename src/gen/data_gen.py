@@ -33,7 +33,7 @@ Outputs:
 import sys
 
 import pde
-from funcs import apply_noise, pdes
+from gen.funcs import apply_noise, pdes
 
 if __name__ == "__main__":
     try:
