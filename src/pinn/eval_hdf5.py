@@ -21,7 +21,7 @@ import numpy as np
 import torch
 from pinn_io import load_pinn
 
-from pinn import FCN  # <-- adjust import to wherever your FCN class lives
+from pinn import FCN
 
 
 def load_hdf5(path, x_key, t_key, u_key, flat):
@@ -145,11 +145,22 @@ def main():
 
     if args.save:
         try:
-            np.savez(
-                args.save, x=x, t=t, u_pred=u_pred, u_true=u_true, grid_shape=grid_shape
-            )
+            if grid_shape is not None:
+                np.savez(
+                    args.save,
+                    x=x,
+                    t=t,
+                    u_pred=u_pred,
+                    u_true=u_true,
+                    grid_shape=grid_shape,
+                )
+            else:
+                raise TypeError()
         except OSError as e:
-            print(f"Error: failed to save evaluation data to '{args.save}': {e}", file=sys.stderr)
+            print(
+                f"Error: failed to save evaluation data to '{args.save}': {e}",
+                file=sys.stderr,
+            )
             sys.exit(1)
         print(f"Saved evaluation data to {args.save}")
 

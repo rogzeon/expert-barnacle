@@ -1,3 +1,5 @@
 *local
 *__pycache__
 *.hdf5
+*.pt
+*pyproject.toml

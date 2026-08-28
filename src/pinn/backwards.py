@@ -286,8 +286,8 @@ def main():
         2. set up the domain and PDE parameters,
         3. PINN training
         4. Plot sigma evolution during training
-        4. Save model to path given by ``--saveto``
-        5. generate a heatmap plot of the PINN output
+        5. Save model to path given by ``--saveto``
+        6. generate a heatmap plot of the PINN output
     """
     device = "cpu"
     if torch.cuda.is_available():
