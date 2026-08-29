@@ -16,13 +16,13 @@ Validation is done by comparing compare PINN output against the closed-form Blac
 ## Key results
 
 ![PINN vs. closed-form Black-Scholes comparison](figs/pinn_vs_analytical.png)
-*Placeholder — replace with a 3-panel plot (PINN prediction | analytical Black-Scholes solution | absolute error heatmap) from `eval_analytical.py` / `plot_heatmap.py --compare`. This is the accuracy proof — pick a run with low max error and report it in the caption (e.g. "max abs error < 1e-3 across the domain").*
+*max abs error ~ 1e-3 across the domain*
 
 ![Training loss curves](figs/loss_curve.png)
-*Placeholder — replace with a log-scale line chart of total loss and each individual loss term (initial condition, left/right boundary, PDE residual) over training iterations, spanning both the Adam and L-BFGS optimization phases (see the `[Adam]` / `[LBFGS]` log lines in `main.py`). Demonstrates the two-stage optimization strategy and convergence behavior.*
+*Converges to a total loss ~2.6e-5 with ADAM (Left of dashed line) before reaching a final value of ~6e-7 with LBGFS. (Right of dashed line)*
 
 ![Volatility calibration convergence](figs/sigma_calibration.png)
-*Placeholder — replace with a line chart from `backwards.py` showing the estimated sigma (volatility) parameter converging toward its true value over training iterations. This is the clearest illustration of the inverse-problem capability — recovering a hidden physical parameter purely from data.*
+*Inverse problem - Sigma gradually converges to within 4% of the target value of 0.04*
 
 ## Primary Components
 
@@ -64,20 +64,25 @@ expert-barnacle/
 
 ```bash
 # Requires Python (see .python-version) and a virtual environment of your choice
-pip install torch numpy py-pde h5py matplotlib
+pip install -r requirements.txt
+pip install -e .
 
-# Train a forward PINN for a European call option
-cd src/pinn
-python main.py -s ../../models/pinn.pt
+# 1. Train the forward PINN
+python -m pinn.main -s models/pinn.pt
 
-# Evaluate against the closed-form solution
-python eval_analytical.py --checkpoint ../../models/pinn.pt --nx 200 --nt 200
+# 2. Generate loss plot from step 1 checkpoint.
+python -m figs.plot_loss_curve --history figs/loss_history.npz --out figs/loss_curve.png
 
-# Generate synthetic reference data, then calibrate volatility from it
-cd ../gen
-python data_gen.py ../data/bs_run 0.0 black_scholes EUROCALL 1 0.04 0.03 10
-cd ../pinn
-python backwards.py -d ../data/bs_run.hdf5 -s ../../models/pinn_backward.pt
+# 3. PINN vs. analytical comparison from step 1 checkpoint.
+python -m figs.gen_pinn_vs_analytical --checkpoint models/pinn.pt --out figs/pinn_vs_analytical.png
+
+# 4. Generate synthetic data
+python -m gen.data_gen bs_run 0.0 black_scholes EUROCALL 1 0.04 0.03 10
+# alternatively,
+python -m gen.data_gen @src/data/bs_run.args
+
+# Calibrate volatility from synthetic data
+python -m pinn.backwards -d bs_run.hdf5 -s pinn_backward.pt
 ```
 
 ## Tech stack
