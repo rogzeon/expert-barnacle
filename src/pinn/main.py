@@ -142,12 +142,6 @@ def train(domain: Domain, params: BlackScholesPDE):
 
     loss_history = []
 
-    with torch.no_grad():
-        test_x = torch.linspace(0, 1, 10).unsqueeze(1)
-        test_t = torch.ones_like(test_x)
-        test_in = torch.cat([test_x, test_t], dim=1)
-        print(pinn(test_in).flatten())
-
     def compute_loss():
         u_at_t0 = pinn(boundary_inputs)
 
