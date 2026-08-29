@@ -31,10 +31,13 @@ Outputs:
 """
 
 import sys
+from pathlib import Path
 
 import pde
 
 from gen.funcs import apply_noise, pdes
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 if __name__ == "__main__":
     try:
@@ -64,8 +67,11 @@ if __name__ == "__main__":
         print("".join(traceback.format_tb(e.__traceback__)))
         sys.exit()
 
-    file_store = pde.FileStorage(f"src/data/{filename}.hdf5", info=output.info)
+    out_path = REPO_ROOT / "figs" / f"{filename}.hdf5"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    file_store = pde.FileStorage(str(out_path), info=output.info)
     output.apply(lambda field: field, out=file_store)
 
-    with open(f"src/data/{filename}_args.txt", "w") as f:
+    args_path = REPO_ROOT / "figs" / f"{filename}_args.txt"
+    with open(args_path, "w") as f:
         f.write(", ".join(sys.argv[2:]))
