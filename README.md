@@ -89,7 +89,6 @@ python -m pinn.backwards -d bs_run.hdf5 -s pinn_backward.pt
 ## Possible extensions
 
 - American options / early-exercise boundaries
-- Stochastic volatility models (Heston) as a harder inverse-problem benchmark
 - Multi-asset (basket option) pricing in higher dimensions
 - Uncertainty quantification on the calibrated volatility estimate
 - Improved modularization to allow for quick implementation of user-defined PDEs.
