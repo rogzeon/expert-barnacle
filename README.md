@@ -13,7 +13,7 @@ Validation is done by comparing compare PINN output against the closed-form Blac
 ## Key results
 
 ![PINN vs. closed-form Black-Scholes comparison](figs/pinn_vs_analytical.png)
-*max abs error ~ 1e-3 across the domain*
+*max abs error ~1e-3 across the domain*
 
 ![Training loss curves](figs/loss_curve.png)
 *Converges to a total loss ~2.6e-5 with ADAM (Left of dashed line) before reaching a final value of ~6e-7 with LBGFS. (Right of dashed line)*
