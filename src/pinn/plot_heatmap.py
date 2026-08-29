@@ -14,10 +14,13 @@ import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from pathlib import Path
 
 from common.classes import Domain
 from pinn.model import FCN
 from pinn.pinn_io import load_pinn
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def predict_grid(
@@ -168,7 +171,9 @@ def main():
         X, T, u_pred = predict_grid(
             model, x_min, x_max, t_min, t_max, args.nx, args.nt, device, rescale=True
         )
-        plot_single(X, T, u_pred, "PINN prediction u(x, t)", args.out)
+        plot_single(
+            X, T, u_pred, "PINN prediction u(x, t)", str(REPO_ROOT / "figs" / args.out)
+        )
 
 
 if __name__ == "__main__":

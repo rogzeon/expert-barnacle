@@ -32,6 +32,9 @@ from pinn.pinn_io import save_pinn
 from pinn.plot_heatmap import plot_single, predict_grid
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 # Functions below use functions above in order to generate IC.
 # Modify functions above to change IC
 def create_t0_boundary(x_min, x_max, num_pts, t0=0.0, **kwargs):
@@ -283,7 +286,7 @@ def main():
         "-s",
         "--saveto",
         type=str,
-        default="models/pinn.pt",
+        default=str(REPO_ROOT / "models" / "pinn.pt"),
         help="Path to where the model should be saved",
     )
     args = parser.parse_args()
@@ -296,7 +299,7 @@ def main():
     pinn, loss_hist = train(domain, params)
     Path("figs").mkdir(parents=True, exist_ok=True)
     np.savez(
-        "figs/loss_history.npz",
+        str(REPO_ROOT / "figs" / "loss_history.npz"),
         phase=np.array([h["phase"] for h in loss_hist]),
         iter=np.array([h["iter"] for h in loss_hist]),
         loss=np.array([h["loss"] for h in loss_hist]),
@@ -325,7 +328,9 @@ def main():
         "cpu",
         rescale=True,
     )
-    plot_single(x, t, pred, "PINN output", "figs/pinn_forward_heatmap.png")
+    plot_single(
+        x, t, pred, "PINN output", str(REPO_ROOT / "figs" / "pinn_forward_heatmap.png")
+    )
 
 
 if __name__ == "__main__":

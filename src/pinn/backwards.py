@@ -38,6 +38,8 @@ from pinn.model import ConstrainedFCN
 from pinn.pinn_io import save_pinn
 from pinn.plot_heatmap import plot_single, predict_grid
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def create_data_points(
     data: torch.Tensor,
@@ -302,7 +304,7 @@ def main():
         "-s",
         "--saveto",
         type=str,
-        default="models/pinn_backward_new.pt",
+        default=str(REPO_ROOT / "models" / "pinn_backward.pt"),
         help="Path to where the model should be saved",
     )
     args = parser.parse_args()
@@ -355,7 +357,13 @@ def main():
         "cpu",
         rescale=True,
     )
-    plot_single(x, t, pred, "PINN output (backward run)", "figs/pinn_backward_heat.png")
+    plot_single(
+        x,
+        t,
+        pred,
+        "PINN output (backward run)",
+        str(REPO_ROOT / "figs" / "pinn_backward_heat.png"),
+    )
 
 
 if __name__ == "__main__":

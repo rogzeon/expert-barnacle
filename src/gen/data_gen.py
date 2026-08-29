@@ -40,6 +40,24 @@ from gen.funcs import apply_noise, pdes
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 if __name__ == "__main__":
+    from_file = False
+    if len(sys.argv) > 1 and sys.argv[1].startswith("@"):
+        args_file = sys.argv[1][1:]
+        from_file = True
+        try:
+            with open(args_file, "r") as f:
+                content = f.read().strip()
+            if not content:
+                raise ValueError(f"Arguments file {args_file!r} is empty.")
+            new_args = content.split()
+            sys.argv = [sys.argv[0]] + new_args
+        except FileNotFoundError:
+            print(f"Error: Arguments file {args_file!r} not found.")
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error reading arguments file: {e}")
+            sys.exit(1)
+
     try:
         filename = sys.argv[1]
         sigma = float(sys.argv[2])
@@ -52,6 +70,8 @@ if __name__ == "__main__":
         print("""
         Usage: 
         python data_gen.py [destination] [noise amount] [PDE Name] [PDE Arguments] [t_max]
+        python data_gen.py @path/to/file.args
+
         for no noise, set the parameter to 0.
         Valid PDEs:                         Arguments 
         black_scholes                       option name, strike price, sigma, r
@@ -60,6 +80,8 @@ if __name__ == "__main__":
         allen_cahn                          epsilon
         diff1d          <- 1D diffusion     diffusion coefficient
         diff2d          <- 2d diffusion     diffusion coefficient
+
+        .args files are generated automatically when run with the first pattern
         """)
         print(e)
         import traceback
@@ -72,6 +94,7 @@ if __name__ == "__main__":
     file_store = pde.FileStorage(str(out_path), info=output.info)
     output.apply(lambda field: field, out=file_store)
 
-    args_path = REPO_ROOT / "figs" / f"{filename}_args.txt"
-    with open(args_path, "w") as f:
-        f.write(", ".join(sys.argv[2:]))
+    if not from_file:
+        args_path = REPO_ROOT / "figs" / f"{filename}.args"
+        with open(args_path, "w") as f:
+            f.write(", ".join(sys.argv[2:]))
