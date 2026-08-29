@@ -24,17 +24,14 @@ Validation is done by comparing compare PINN output against the closed-form Blac
 ![Volatility calibration convergence](figs/sigma_calibration.png)
 *Placeholder — replace with a line chart from `backwards.py` showing the estimated sigma (volatility) parameter converging toward its true value over training iterations. This is the clearest illustration of the inverse-problem capability — recovering a hidden physical parameter purely from data.*
 
-## How it works
+## Primary Components
 
-![PINN training architecture](figs/architecture_diagram.png)
-*Placeholder — replace with a diagram showing: network inputs (spot price `x`, time `t`) → fully-connected network (`FCN`, SiLU activations) → predicted option value `u(x,t)` → autograd derivatives (`∂u/∂t`, `∂u/∂x`, `∂²u/∂x²`) → combined loss (PDE residual + boundary + initial condition) → backprop. Illustrates the core PINN training loop for someone unfamiliar with the method.*
-
-1. **Domain & PDE setup** (`common/classes.py`) - `Domain` and `BlackScholesPDE` dataclasses define the (spot, time) grid and contract parameters, with validation to catch malformed grids at construction time rather than downstream.
-2. **Network** (`pinn/model.py`) - a configurable fully-connected network (`FCN`), plus a `ConstrainedFCN` variant that hard-codes the option payoff into the network's output via a time-dependent ansatz, to better handle the payoff's non-differentiable kink at the strike price.
-3. **Training** (`pinn/main.py`, `pinn/backwards.py`) - the loss combines the PDE residual (computed via `torch.autograd` derivatives) with initial- and boundary-condition losses. Training runs Adam first for coarse convergence, then switches to L-BFGS for fine-grained convergence — a common two-stage strategy for PINNs.
-4. **Data generation** (`gen/data_gen.py`, `gen/funcs.py`) - synthetic reference solutions (Black-Scholes, Allen-Cahn, 1D/2D diffusion) are generated with `py-pde` and stored as HDF5, optionally with injected Gaussian noise, for use as training/evaluation data in the inverse problem.
-5. **Evaluation** (`pinn/eval_analytical.py`, `pinn/eval_hdf5.py`) - trained models are checked against the closed-form Black-Scholes formula or against stored HDF5 reference solutions.
-6. **Visualization** (`pinn/plot_heatmap.py`, `data/visual/visualize.py`) - heatmaps of predicted vs. reference solutions, and kymograph/movie visualization of raw PDE storage output.
+1. **Domain & PDE setup** (`common/classes.py`): `Domain` and `BlackScholesPDE` dataclasses define the (spot, time) grid and contract parameters.
+2. **Network** (`pinn/model.py`): a basic fully-connected network (`FCN`) used in `pinn/main.py`, plus a `ConstrainedFCN` class for solving the inverse problem that hard-codes the contract payoff at time of maturity, in order to mitigate issues potentially caused by a non-differentiable payoff at time of maturity.
+3. **Training** (`pinn/main.py`, `pinn/backwards.py`): the loss combines the PDE residual with initial- and boundary-condition losses. Training runs Adam first for coarse convergence, then switches to L-BFGS for fine-grained convergence.
+4. **Data generation** (`gen/data_gen.py`, `gen/funcs.py`): synthetic reference solutions for various PDEs are generated with `py-pde` and stored as .hdf5 files. The data can then be used as training data for the `pinn/backwards.py`, or as reference data for `pinn/eval_hdf5.py`.
+5. **Evaluation** (`pinn/eval_analytical.py`, `pinn/eval_hdf5.py`): trained models are checked against closed-form solutions or against stored .hdf5 reference data.
+6. **Visualization** (`pinn/plot_heatmap.py`, `data/visual/visualize.py`): Various plotting and visualization scripts, for internal usage.
 
 ## Project structure
 

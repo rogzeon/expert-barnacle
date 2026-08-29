@@ -14,7 +14,9 @@ The trained model is saved to the specified path.
 """
 
 import argparse
+from pathlib import Path
 
+import numpy as np
 import torch
 
 from common.classes import BlackScholesPDE, Domain, Option
@@ -134,8 +136,9 @@ def train(domain: Domain, params: BlackScholesPDE):
     pinn = FCN(2, 1, 64, 3)
     optimiser = torch.optim.Adam(pinn.parameters(), lr=1e-3)
     lambda1, lambda2 = 1, 1
-    print(boundary_inputs.std(dim=0))
-    print(u0_target.var().item())
+
+    loss_history = []
+
     with torch.no_grad():
         test_x = torch.linspace(0, 1, 10).unsqueeze(1)
         test_t = torch.ones_like(test_x)
@@ -180,11 +183,6 @@ def train(domain: Domain, params: BlackScholesPDE):
     for i in range(7501):
         optimiser.zero_grad()
 
-        # loss function hyperparameters
-        # inside loop in case the need arises for them to be adaptive.
-
-        # compute boundary loss at t=0
-        # Evaluate PINN output u(x, t=0)
         loss, loss1, loss2, loss3, loss4 = compute_loss()
         loss.backward(retain_graph=True)  # Added retain_graph=True here
         optimiser.step()
@@ -193,6 +191,18 @@ def train(domain: Domain, params: BlackScholesPDE):
                 f"[Adam] {i}/7500. Loss: {loss.item():.6e}. "
                 f"L1: {loss1.item():.6e}. L2: {loss2.item():.6e}. "
                 f"L3: {loss3.item():.6e}. L4: {loss4.item():.6e}"
+            )
+        if i % 25 == 0:
+            loss_history.append(
+                {
+                    "phase": "adam",
+                    "iter": i,
+                    "loss": loss.item(),
+                    "loss1": loss1.item(),
+                    "loss2": loss2.item(),
+                    "loss3": loss3.item(),
+                    "loss4": loss4.item(),
+                }
             )
 
     lbfgs = torch.optim.LBFGS(
@@ -217,18 +227,40 @@ def train(domain: Domain, params: BlackScholesPDE):
                 f"L1: {loss1.item():.6e}. L2: {loss2.item():.6e}. "
                 f"L3: {loss3.item():.6e}. L4: {loss4.item():.6e}"
             )
+        if lbfgs_steps[0] % 20 == 0:
+            loss_history.append(
+                {
+                    "phase": "lbfgs",
+                    "iter": 7501 + lbfgs_steps[0],
+                    "loss": loss.item(),
+                    "loss1": loss1.item(),
+                    "loss2": loss2.item(),
+                    "loss3": loss3.item(),
+                    "loss4": loss4.item(),
+                }
+            )
         lbfgs_steps[0] += 1
         return loss
 
     lbfgs.step(closure)
-
     loss, loss1, loss2, loss3, loss4 = compute_loss()
     print(
         f"[FINAL] Loss: {loss.item():.6e}. "
         f"L1: {loss1.item():.6e}. L2: {loss2.item():.6e}. "
         f"L3: {loss3.item():.6e}. L4: {loss4.item():.6e}"
     )
-    return pinn
+    loss_history.append(
+        {
+            "phase": "lbfgs",
+            "iter": 7501 + lbfgs_steps[0],
+            "loss": loss.item(),
+            "loss1": loss1.item(),
+            "loss2": loss2.item(),
+            "loss3": loss3.item(),
+            "loss4": loss4.item(),
+        }
+    )
+    return pinn, loss_history
 
 
 def main():
@@ -261,7 +293,18 @@ def main():
     params = BlackScholesPDE(
         option=Option.EUROCALL, k=0.5, sigma=0.02, r=0.02, t_max=10
     )
-    pinn = train(domain, params)
+    pinn, loss_hist = train(domain, params)
+    Path("figs").mkdir(parents=True, exist_ok=True)
+    np.savez(
+        "figs/loss_history.npz",
+        phase=np.array([h["phase"] for h in loss_hist]),
+        iter=np.array([h["iter"] for h in loss_hist]),
+        loss=np.array([h["loss"] for h in loss_hist]),
+        loss1=np.array([h["loss1"] for h in loss_hist]),
+        loss2=np.array([h["loss2"] for h in loss_hist]),
+        loss3=np.array([h["loss3"] for h in loss_hist]),
+        loss4=np.array([h["loss4"] for h in loss_hist]),
+    )
     save_pinn(
         args.saveto,
         pinn,
@@ -279,10 +322,10 @@ def main():
         domain.t_max,
         domain.ndim(0),
         domain.nt,
-        device,
+        "cpu",
         rescale=True,
     )
-    plot_single(x, t, pred, "PINN output", "figs/pinn_results.png")
+    plot_single(x, t, pred, "PINN output", "figs/pinn_forward_heatmap.png")
 
 
 if __name__ == "__main__":

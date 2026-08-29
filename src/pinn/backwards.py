@@ -20,10 +20,11 @@ is printed in the terminal.
 """
 
 import argparse
+from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
-from pinn.model import ConstrainedFCN
 
 from common.classes import BlackScholesPDE, Domain
 from common.funcs import modify_domain, read_black_scholes_run
@@ -33,6 +34,7 @@ from common.pinn_helpers import (
     gen_phys_training_pts,
     get_derivatives,
 )
+from pinn.model import ConstrainedFCN
 from pinn.pinn_io import save_pinn
 from pinn.plot_heatmap import plot_single, predict_grid
 
@@ -244,13 +246,13 @@ def train(
 
         else:
             optim_sig.step()
-            sig_history.append(torch.exp(log_sig_est).item())
+            sig_history.append(torch.exp(log_sig_est).item() / (T_SCALE**0.5))
         if i % 500 == 0:
             print(
                 f"[Adam] {i}/16000. Loss: {loss.item():.6e}. "
                 f"L1(data): {loss1.item():.6e}. L2(bdry_left): {loss2.item():.6e}. "
                 f"L3(bdry_right): {loss3.item():.6e}. L4(phys): {loss4.item():.6e}. "
-                f"sig: {torch.exp(log_sig_est).item():.6e}"
+                f"sig: {torch.exp(log_sig_est).item() / (T_SCALE**0.5):.6e}"
             )
         if i % 2000 == 1820:
             sigma_phase = True
@@ -266,17 +268,14 @@ def train(
             log_sig_est.requires_grad_(sigma_phase)
 
     loss, loss1, loss2, loss3, loss4 = compute_loss()
-    sig_est_final = torch.exp(log_sig_est).item()
-    sig_est_final_scaled = sig_est_final / T_SCALE
+    sig_est_final = torch.exp(log_sig_est).item() / (T_SCALE**0.5)
     print(
         f"[FINAL] Loss: {loss.item():.6e}. "
         f"L1(data): {loss1.item():.6e}. L2(bdry_left): {loss2.item():.6e}. "
         f"L3(bdry_right): {loss3.item():.6e}. L4(phys): {loss4.item():.6e}. "
     )
-    print(
-        f"[FINAL] est. sigma:{sig_est_final_scaled:.6e} true sigma:{params.sigma:.6e}"
-    )
-    return pinn, sig_est_final_scaled, sig_history
+    print(f"[FINAL] est. sigma:{sig_est_final:.6e} true sigma:{params.sigma:.6e}")
+    return pinn, sig_est_final, sig_history
 
 
 def main():
@@ -315,14 +314,25 @@ def main():
     )
     domain = modify_domain(domain, resolution=(100,), _t_res=50)
     pinn, sig_est_final, sig_hist = train(domain, params, data)
+    Path("figs").mkdir(parents=True, exist_ok=True)
     plt.figure(figsize=(8, 5))
-    plt.plot(sig_hist, linewidth=2)
-    plt.xlabel("Epochs")
+    plt.plot(sig_hist, linewidth=2, label="Estimated sigma")
+
+    plt.axhline(
+        params.sigma, color="gray", linestyle="--", label=f"True sigma ({params.sigma})"
+    )
+    plt.xlabel("Sigma training epochs")
     plt.ylabel("Estimated sigma")
     plt.title("Sigma evolution during training")
+    plt.legend()
     plt.grid(True)
-    plt.savefig("sig_loss_hist_new_rate_low.png", dpi=150)
+    plt.savefig("figs/sigma_calibration.png", dpi=150)
     plt.close()
+    np.savez(
+        "figs/sigma_calibration.npz",
+        sig_hist=np.array(sig_hist),
+        true_sigma=params.sigma,
+    )
 
     save_pinn(
         args.saveto,
@@ -342,10 +352,10 @@ def main():
         domain.t_max,
         domain.ndim(0),
         domain.nt,
-        device,
+        "cpu",
         rescale=True,
     )
-    plot_single(x, t, pred, "PINN output", "figs/pinn_results.png")
+    plot_single(x, t, pred, "PINN output (backward run)", "figs/pinn_backward_heat.png")
 
 
 if __name__ == "__main__":
