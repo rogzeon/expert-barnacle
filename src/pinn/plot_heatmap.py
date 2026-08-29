@@ -162,7 +162,7 @@ def main():
             )
         u_pred = data["u_pred"].reshape(X.shape)
         u_true = data["u_true"].reshape(X.shape)
-        plot_comparison(X, T, u_pred, u_true, args.out)
+        plot_comparison(X, T, u_pred, u_true, str(REPO_ROOT / "figs" / args.out))
     else:
         x_min = args.x_min if args.x_min is not None else domain.mindim(0)
         x_max = args.x_max if args.x_max is not None else domain.maxdim(0)

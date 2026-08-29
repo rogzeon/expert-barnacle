@@ -89,12 +89,12 @@ if __name__ == "__main__":
         print("".join(traceback.format_tb(e.__traceback__)))
         sys.exit()
 
-    out_path = REPO_ROOT / "figs" / f"{filename}.hdf5"
+    out_path = REPO_ROOT / "src" / "data" / f"{filename}.hdf5"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     file_store = pde.FileStorage(str(out_path), info=output.info)
     output.apply(lambda field: field, out=file_store)
 
     if not from_file:
-        args_path = REPO_ROOT / "figs" / f"{filename}.args"
+        args_path = REPO_ROOT / "src" / "data" / f"{filename}.args"
         with open(args_path, "w") as f:
             f.write(", ".join(sys.argv[2:]))
